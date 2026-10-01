@@ -1,0 +1,9 @@
+node_modules
+.next
+public/ocr
+public/pdf
+package-lock.json
+playwright-report
+test-results
+coverage
+supabase/migrations

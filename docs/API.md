@@ -1,0 +1,62 @@
+# Bearer API v1
+
+Root `/api/v1`. Tất cả endpoints cần `Authorization: Bearer <Supabase access token>`; không cookie-based authorization, không nhận role/user_id từ client để cấp quyền. Responses/error `Cache-Control: no-store`. Lỗi `{error, fields?}`, 400 validation, 401 token, 403 role/tenant, 404 not accessible, 409 conflict, 413 limits, 503 setup unavailable.
+
+| Method / path                              | Contract                                                                                                                                                                    |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| GET /workspace                             | `{data:AppData, actor:Actor}` qua RLS; customer chỉ cited sources, không rules registry                                                                                     |
+| GET /health                                | `{database, scanner_configured, worker_last_activity, local_ocr}`; configured không có nghĩa scanner được ping thành công                                                   |
+| GET /products[/:id]                        | Dossier + ordered formula                                                                                                                                                   |
+| POST /products                             | Create/save draft; org permission checked, classification computed server-side                                                                                              |
+| POST /products/:id/label-versions          | JSON `{manifest:[{id:uuid,name,mime_type,size,sha256,page_count}]}` → label + immutable file paths                                                                          |
+| GET /label-versions/:id                    | Manifest/normalized metadata/fields                                                                                                                                         |
+| POST /label-versions/:id/reviews           | `{review_scope:"us_federal_food_labeling_mvp",formula_confirmed:true,claims_confirmed:true,idempotency_key?}`; optional Idempotency-Key header; upload/intake checked in DB |
+| GET /reviews/:id                           | Review progress/pipeline + severity counts                                                                                                                                  |
+| GET /reviews/:id/findings                  | Findings                                                                                                                                                                    |
+| POST /reviews/:id/findings                 | Manual finding: title, description, severity, suggested_action, citation_ids, evidence                                                                                      |
+| PATCH /findings/:id                        | `{severity,status,reviewer_comment,citation_ids?}`; reviewer, reason mandatory                                                                                              |
+| PATCH /label-versions/:lid/fields/:fid     | `{value,reason}`; invalidates rule snapshot, requires rerun                                                                                                                 |
+| POST /reviews/:id/requests                 | `{message,requested_documents:[]}`                                                                                                                                          |
+| PATCH /requests/:id                        | `{status:"resolved"}`; reviewer                                                                                                                                             |
+| POST /reviews/:id/assign                   | `{reviewer_id,reason}`; reviewer self-claim or System Admin assignment                                                                                                      |
+| PATCH /reviews/:id                         | `{status,reason}`; guarded state transition, never generic approval                                                                                                         |
+| POST /reviews/:id/retry                    | `{from_stage:"validation"                                                                                                                                                   | "ocr"                                         | "extraction" | "rules" | "verification"}` |
+| POST /reviews/:id/reports                  | `{comment,disclaimer_confirmed:true}`; reviewer snapshot approval + private artifacts; returns report/pdf_url/json_url                                                      |
+| GET /reports/:id/download?format=pdf\|json | `{url,expires_in:300}`; materialization retry if needed, audited                                                                                                            |
+| GET /files/:id/signed-url                  | `{url,expires_in:300}`; clean only                                                                                                                                          |
+| POST /files/:id/access                     | `{action:"view"                                                                                                                                                             | "download"}`; audited, clean only             |
+| POST /organizations                        | Organization create/edit; first-time customer onboarding or system manager                                                                                                  |
+| POST /members/invite                       | `{organization_id,name,email,role:"customer_admin"                                                                                                                          | "customer_contributor"}`                      |
+| PATCH /members/:id                         | `{status:"active"                                                                                                                                                           | "locked"}`; cannot self-lock/lock final admin |
+| GET/POST /regulatory/sources               | Staff list / Regulatory Admin edit fetched snapshot metadata                                                                                                                |
+| POST /regulatory/sources/:id/approve       | Independent Regulatory Admin                                                                                                                                                |
+| GET/POST /regulatory/rules                 | Staff list / Regulatory Admin save DRAFT; editing published rule creates version                                                                                            |
+| POST /regulatory/rules/:id/test            | Server runs regression and records definition/source hashes; returns 15 results                                                                                             |
+| POST /regulatory/rules/:id/approve         | Independent approval + fresh tests/current sources                                                                                                                          |
+
+Manifest flow: validate signature/hash in browser → register JSON → **authenticated direct upload** to `label-originals` at returned path, `upsert:false` → submit review. Do not expose service key. Worker is authoritative for page count after malware scan. Multipart `files` is supported only for bounded compatibility (Content-Length, total ≤100 MB); JSON/direct Storage is preferred for large files. Partial uploads retain history; do not overwrite an existing version.
+
+UUID path params, 1 MB JSON limit, 20 files, 50 MB/file, 10 pages. Source excerpt hash computed in database from exact text. Schema/functions in migrations and `src/server/api-handler.ts` are the source of truth. All business safety checks are repeated in database RPCs to protect against direct PostgREST calls.
+
+## Regulatory Knowledge · `/api/v1/regulatory/knowledge`
+
+Mọi endpoint cần verified bearer; customer bị từ chối. Các thao tác ghi chỉ Regulatory Admin.
+
+| Method | Path                                             | Purpose                                                                                             |
+| ------ | ------------------------------------------------ | --------------------------------------------------------------------------------------------------- |
+| GET    | `/regulatory/knowledge`                          | Staff dashboard, capped lists + uncapped operational metrics                                        |
+| POST   | `/regulatory/knowledge/jobs`                     | Queue `ecfr_part101`, `ecfr_section`, `ecfr_discovery`, `fr_monitor`; fixed legal params only       |
+| GET    | `/regulatory/knowledge/snapshots/:id?offset=0`   | Snapshot, 50 chunks/page, exact count, affected ACTIVE rules, latest QA freshness                   |
+| GET    | `/regulatory/knowledge/snapshots/:id/raw`        | Admin-only audited private signed URL (300s), hash                                                  |
+| POST   | `/regulatory/knowledge/snapshots/:id/regression` | Trusted server evaluates current affected definitions on synthetic fixtures; immutable QA record    |
+| POST   | `/regulatory/knowledge/snapshots/:id/review`     | Expected raw hash, mandatory checklist, classification, separately verified/unknown effective dates |
+| POST   | `/regulatory/knowledge/snapshots/:id/activate`   | Independent atomic source activation; fresh passing QA + source baseline required                   |
+| POST   | `/regulatory/knowledge/snapshots/:id/withdraw`   | Reason ≥20 chars, removes automatic evidence but keeps history                                      |
+| POST   | `/regulatory/knowledge/alerts/:id/resolve`       | Detailed resolution/audit, no rule edits                                                            |
+| POST   | `/regulatory/knowledge/retrieve`                 | Staff full-text ACTIVE citations, local DB only                                                     |
+
+Job body: `{kind,params}`. Params: section `101.x`, fixed term, start/end publication dates (≤32 calendar days), document_type RULE/PRORULE/NOTICE, force_refresh boolean, cfr_part101_only boolean. Never accept arbitrary external URLs or customer labels.
+
+Retrieve body: `{question,topic,jurisdiction:"US_FEDERAL",product_scope:"dry_packaged_tea"|"tea_bag",as_of_date,required_authorities:["eCFR","FDA"],limit:4}`. Result: `{citations,untrusted_evidence:true,instructions}`; no hit stays human-pending. Text budget ≤4×6000. Government APIs never receive this question. Vector RPC 768-dimensional is separate and does not auto-enable a provider.
+
+Full semantics / limitations / required golden XML checks: [Regulatory Knowledge](REGULATORY_KNOWLEDGE.md).

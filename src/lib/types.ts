@@ -284,6 +284,8 @@ export interface PreScreeningReport {
 export interface RegulatorySource {
   api_url?: string | null;
   issue_date?: string | null;
+  document_revision_date?: string | null;
+  document_revision_label?: string | null;
   raw_snapshot_id?: string | null;
   raw_content_hash?: string | null;
   parser_version?: string | null;

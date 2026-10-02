@@ -11,7 +11,7 @@ import {
   getOcrProvider,
 } from "../src/server/providers";
 import { scanFile, UnsafeFileError } from "../src/server/virus-scan";
-import { readJson } from "../src/server/context";
+import { readJson, serviceClient } from "../src/server/context";
 import { apiHandler } from "../src/server/api-handler";
 import { generateReportPdf } from "../src/lib/pdf-report";
 import { createSeedData } from "../src/lib/seed";
@@ -83,6 +83,16 @@ describe("Server boundaries", () => {
     );
     // The request reaches the auth boundary (401), rather than failing config (503).
     expect(response.status).toBe(401);
+  });
+  it("prefers server-only SUPABASE_URL and falls back to NEXT_PUBLIC_SUPABASE_URL", () => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+    vi.stubEnv("SUPABASE_URL", "https://staging-project.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "not-a-valid-url");
+    expect(() => serviceClient()).not.toThrow();
+
+    vi.stubEnv("SUPABASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://fallback-project.supabase.co");
+    expect(() => serviceClient()).not.toThrow();
   });
   it("requires a bearer token before any workspace/health query", async () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://supabase.example");

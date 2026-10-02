@@ -197,6 +197,8 @@ export async function mutateKnowledgeDemo(
       effective_to: null,
       effective_date_unknown: true,
       raw_response_id: id(),
+      document_revision_date: null,
+      document_revision_label: null,
       content_hash: hash,
       parser_version: fr ? "vexim-fr-metadata/1.0.0" : "vexim-ecfr-xml/1.1.0",
       status: "DRAFT",

@@ -13,8 +13,12 @@ import {
 } from "@/lib/ecfr-parser";
 import { runRuleRegression } from "@/lib/regression";
 import { RULE_CATALOG, SOURCE_CATALOG } from "@/lib/regulatory";
+import { fdaGuidanceSourceForJob } from "@/lib/fda-guidance";
+import { parseFdaHtml, FDA_HTML_PARSER_VERSION } from "@/lib/fda-html-parser";
+import { parseFdaPdf, FDA_PDF_PARSER_VERSION } from "@/lib/fda-pdf-parser";
 import {
   EcfrClient,
+  FdaGuidanceClient,
   FederalRegisterClient,
   documentJson,
   latestTitleIssueDate,
@@ -48,6 +52,14 @@ export interface IngestionRepository {
     message: string,
   ): Promise<unknown>;
   federalDraft(jid: string, worker: string, id: string): Promise<unknown>;
+  stageFdaGuidance?(
+    jid: string,
+    worker: string,
+    id: string,
+    sections: ParsedSection[],
+    chunks: ParsedRegulatoryChunk[],
+    validation: ParserValidation,
+  ): Promise<unknown>;
 }
 export async function processRegulatoryIngestion(
   job: RegulatoryIngestionJob,
@@ -55,7 +67,162 @@ export async function processRegulatoryIngestion(
   repository: IngestionRepository,
   ecfr: EcfrClient,
   fr: FederalRegisterClient,
+  fda?: FdaGuidanceClient,
 ): Promise<Record<string, unknown>> {
+  const fdaSource = fdaGuidanceSourceForJob(job.kind);
+  if (fdaSource) {
+    if (!fda)
+      throw new RegulatoryApiError(
+        "FDA_CLIENT_REQUIRED",
+        "FDA guidance adapter is not configured in this worker.",
+      );
+    const document =
+      job.kind === "fda_label_claims_html"
+        ? await fda.labelClaims(job.params.force_refresh === true)
+        : await fda.foodLabelGuide(job.params.force_refresh === true);
+    if (
+      document.meta.family !== "fda_guidance" ||
+      !document.meta.validated ||
+      document.meta.api_url !== fdaSource.canonical_url
+    )
+      throw new SourceParseError(
+        "FDA response provenance does not match the fixed source allowlist.",
+      );
+
+    let parsed:
+      | ReturnType<typeof parseFdaHtml>
+      | Awaited<ReturnType<typeof parseFdaPdf>>
+      | undefined;
+    let parseError: Error | undefined;
+    try {
+      parsed =
+        fdaSource.format === "HTML"
+          ? parseFdaHtml(document.body, "fda-label-claims")
+          : await parseFdaPdf(document.body, "fda-food-label-guide");
+    } catch (error) {
+      parseError =
+        error instanceof Error ? error : new SourceParseError("FDA parser failed.");
+    }
+    const parserVersion =
+      fdaSource.format === "HTML"
+        ? FDA_HTML_PARSER_VERSION
+        : FDA_PDF_PARSER_VERSION;
+    const revisionDate = parsed?.document_revision_date ?? null;
+    const snapshot = await repository.record(job.id, worker, {
+      source_key: fdaSource.source_key,
+      source_version: revisionDate ?? `sha256:${document.meta.content_hash}`,
+      document_revision_date: revisionDate,
+      document_revision_label:
+        parsed && "document_revision_label" in parsed
+          ? parsed.document_revision_label
+          : null,
+      parser_version: parserVersion,
+      raw_response_id: document.meta.id,
+      citation: fdaSource.citation,
+      title: fdaSource.title,
+      canonical_url: fdaSource.canonical_url,
+      metadata: {
+        format: fdaSource.format,
+        authority: fdaSource.authority,
+        issuing_agency: fdaSource.agency,
+        document_type: fdaSource.document_type,
+        document_revision_date: revisionDate,
+        document_revision_label:
+          parsed && "document_revision_label" in parsed
+            ? parsed.document_revision_label
+            : null,
+        revision_date_source:
+          parsed && "revision_date_source" in parsed
+            ? parsed.revision_date_source
+            : revisionDate
+              ? "PDF Info ModDate"
+              : null,
+        raw_body_size_bytes: document.meta.byte_size,
+        raw_content_type: document.meta.content_type,
+        raw_last_modified: document.meta.headers["last-modified"] ?? null,
+        ...(parsed
+          ? {
+              page_count: parsed.validation.page_count ?? null,
+              heading_count: parsed.validation.heading_count ?? null,
+              main_content_selector:
+                "main_content_selector" in parsed
+                  ? parsed.main_content_selector
+                  : null,
+              pdf_metadata:
+                "pdf_metadata" in parsed ? parsed.pdf_metadata : null,
+            }
+          : {}),
+      },
+    });
+    if (!["FETCHED", "PARSE_FAILED"].includes(snapshot.status))
+      return {
+        status: "snapshot_already_registered",
+        snapshot_id: snapshot.id,
+        raw_response_id: snapshot.raw_response_id,
+        format: fdaSource.format,
+        raw_hash: snapshot.content_hash,
+        parser_version: snapshot.parser_version,
+        chunk_count: snapshot.chunk_count,
+        source_status: "DRAFT",
+        active_rules_changed: false,
+        rag_eligible: false,
+      };
+    if (parseError || !parsed) {
+      const message = parseError?.message ?? "FDA parser produced no output.";
+      await repository.parseFailed(job.id, worker, snapshot.id, message);
+      throw new SourceParseError(message);
+    }
+    if (!parsed.chunks.length || !parsed.validation.citations_valid) {
+      const message =
+        "FDA parser returned no cited chunks or unresolved citations; draft was not staged.";
+      await repository.parseFailed(job.id, worker, snapshot.id, message);
+      throw new SourceParseError(message);
+    }
+    if (!repository.stageFdaGuidance)
+      throw new RegulatoryApiError(
+        "FDA_STAGING_UNAVAILABLE",
+        "FDA DRAFT staging RPC is not configured in this worker.",
+      );
+    if (Buffer.byteLength(JSON.stringify(parsed)) > 16 * 1024 * 1024) {
+      const message = "Parsed FDA guidance exceeds the bounded staging budget.";
+      await repository.parseFailed(job.id, worker, snapshot.id, message);
+      throw new SourceParseError(message);
+    }
+    await repository.stageFdaGuidance(
+      job.id,
+      worker,
+      snapshot.id,
+      parsed.sections,
+      parsed.chunks,
+      parsed.validation,
+    );
+    return {
+      status: parsed.validation.coverage_complete
+        ? "draft_created"
+        : "draft_created_review_required",
+      snapshot_id: snapshot.id,
+      raw_response_id: document.meta.id,
+      raw_hash: document.meta.content_hash,
+      parser_version: parserVersion,
+      format: fdaSource.format,
+      document_revision_date: revisionDate,
+      document_revision_label:
+        parsed && "document_revision_label" in parsed
+          ? parsed.document_revision_label
+          : null,
+      page_count: parsed.validation.page_count ?? null,
+      heading_count: parsed.validation.heading_count ?? null,
+      section_count: parsed.sections.length,
+      chunk_count: parsed.chunks.length,
+      coverage_complete: parsed.validation.coverage_complete,
+      coverage_ratio: parsed.validation.coverage_ratio ?? null,
+      citations_valid: parsed.validation.citations_valid,
+      source_status: "DRAFT",
+      snapshot_status: "DRAFT",
+      active_rules_changed: false,
+      rag_eligible: false,
+    };
+  }
   if (job.kind === "fr_monitor") {
     const start = dateValue(String(job.params.start_date));
     const end = dateValue(String(job.params.end_date));
@@ -244,7 +411,11 @@ export async function processRegulatoryIngestion(
       status: "snapshot_already_registered",
       snapshot_id: snapshot.id,
       issue_date: issue,
+      raw_hash: snapshot.content_hash,
+      parser_version: snapshot.parser_version,
       chunk_count: snapshot.chunk_count,
+      snapshot_status: snapshot.status,
+      effective_date_unknown: snapshot.effective_date_unknown,
     };
   try {
     const parsed = parseEcfrXml(document.body, {
@@ -286,10 +457,16 @@ export async function processRegulatoryIngestion(
       status: "draft_created",
       snapshot_id: snapshot.id,
       issue_date: issue,
+      raw_hash: document.meta.content_hash,
+      parser_version: ECFR_PARSER_VERSION,
       chunk_count: parsed.chunks.length,
       section_count: parsed.sections.length,
-      raw_hash: document.meta.content_hash,
+      coverage_complete: parsed.validation.coverage_complete,
+      coverage_ratio: parsed.validation.coverage_ratio ?? null,
+      effective_date_unknown: snapshot.effective_date_unknown,
+      snapshot_status: "DRAFT",
       active_rules_changed: false,
+      rag_eligible: false,
     };
   } catch (error) {
     const message =

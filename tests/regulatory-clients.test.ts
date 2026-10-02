@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import {
   RegulatoryHttpClient,
   EcfrClient,
+  FdaGuidanceClient,
   FederalRegisterClient,
   latestTitleIssueDate,
   dateValue,
@@ -334,6 +335,85 @@ describe("eCFR XML parser and numbering traceability", () => {
       "21 CFR 101.9",
     );
   });
+  it("uses the fixed FDA HTML URL, validates MIME, and preserves exact response-body SHA-256", async () => {
+    const bytes = new TextEncoder().encode(
+      "<!doctype html><html><head></head><body><main>Official FDA content</main></body></html>",
+    );
+    const { docs, store } = mockStore();
+    const fetcher = vi.fn(
+      async (input: URL | RequestInfo, options?: RequestInit) => {
+        expect(String(input)).toBe(
+          "https://www.fda.gov/food/nutrition-food-labeling-and-critical-foods/label-claims-conventional-foods-and-dietary-supplements",
+        );
+        expect((options?.headers as Record<string, string>).Accept).toContain(
+          "text/html",
+        );
+        return new Response(bytes, {
+          headers: { "content-type": "text/html; charset=utf-8" },
+        });
+      },
+    ) as unknown as typeof fetch;
+    const client = new FdaGuidanceClient(http(fetcher, store));
+    const first = await client.labelClaims();
+    const cached = await client.labelClaims();
+    expect(first.meta.family).toBe("fda_guidance");
+    expect(first.meta.validated).toBe(true);
+    expect(first.meta.raw_storage_key).toMatch(/response\.html$/);
+    expect(first.body).toEqual(bytes);
+    expect(first.meta.content_hash).toBe(
+      createHash("sha256").update(bytes).digest("hex"),
+    );
+    expect(cached.cache_hit).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(docs).toHaveLength(1);
+  });
+
+  it("checks the fixed FDA PDF MIME/signature and does not follow redirects", async () => {
+    const bytes = new TextEncoder().encode("%PDF-1.7\nraw pdf bytes");
+    const fetcher = vi.fn(async () =>
+      new Response(bytes, {
+        headers: { "content-type": "application/pdf" },
+      }),
+    ) as unknown as typeof fetch;
+    const client = new FdaGuidanceClient(http(fetcher));
+    const document = await client.foodLabelGuide();
+    expect(document.meta.validated).toBe(true);
+    expect(document.meta.content_type).toBe("application/pdf");
+    expect(document.meta.raw_storage_key).toMatch(/response\.pdf$/);
+    expect(document.body).toEqual(bytes);
+
+    const redirected = new FdaGuidanceClient(
+      http(
+        vi.fn(async () =>
+          new Response("", {
+            status: 302,
+            headers: {
+              location: "https://example.invalid/not-fda.pdf",
+              "content-type": "text/plain",
+            },
+          }),
+        ) as unknown as typeof fetch,
+      ),
+    );
+    await expect(redirected.foodLabelGuide(true)).rejects.toMatchObject({
+      code: "HTTP_302",
+    });
+  });
+
+  it("refuses an FDA HTML URL response with a mismatched MIME type", async () => {
+    const { docs, store } = mockStore();
+    const fetcher = vi.fn(async () =>
+      new Response("<html><body>not typed as html</body></html>", {
+        headers: { "content-type": "application/json" },
+      }),
+    ) as unknown as typeof fetch;
+    await expect(
+      new FdaGuidanceClient(http(fetcher, store)).labelClaims(),
+    ).rejects.toMatchObject({ code: "PARSE_FAILED" });
+    expect(docs).toHaveLength(1);
+    expect(docs[0].meta.validated).toBe(false);
+  });
+
   it("records hierarchy/cross-reference provenance and rejects impossible calendar dates", async () => {
     const r = parseEcfrXml(await xml(), { issueDate: "2026-09-25" });
     expect(r.chunks[0].hierarchy!.map((h) => h.type)).toEqual([

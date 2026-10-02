@@ -74,6 +74,6 @@ Build local thành công không thay thế kiểm thử Vercel/Supabase staging.
 
 ## 8. Regulatory Knowledge worker
 
-Chạy additive migration `0003_regulatory_ingestion.sql` trước bản app mới. Đặt `REGULATORY_CONTACT_EMAIL` ở web server và regulatory worker; `REGULATORY_POLL_MS=5000` (1.000–60.000). Worker cần HTTPS outbound tới `www.ecfr.gov` và `www.federalregister.gov`. Không đưa label/formula/customer PII vào government queries.
+Chạy additive migrations trước bản app mới. Worker là process/container riêng (Vercel chỉ triển khai web/API; không tự chạy process nền). Worker đọc `process.env`, và script local tự nạp root `.env.local` nếu có. Dùng secret store của worker runtime, trỏ riêng tới Supabase staging; yêu cầu `REGULATORY_WORKER_ENV=staging`, `SUPABASE_URL` (fallback `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, `REGULATORY_CONTACT_EMAIL` và `REGULATORY_POLL_MS=5000` (1.000–60.000). Không dùng URL/key Production. Worker cần HTTPS outbound tới `www.ecfr.gov` và `www.federalregister.gov`; không đưa label/formula/customer PII vào government queries.
 
 `npm run regulatory:worker -- --schedule` là process/container riêng với label/OCR worker. Hoặc gọi `--schedule-once` hằng ngày qua cron; daily slot UTC idempotent. Hai Regulatory Admin kiểm tra raw/checklist và phê duyệt độc lập ở `/knowledge`. Không có law activation tự động. Chi tiết cache, golden XML fixtures, affected-rule QA và lifecycle: [REGULATORY_KNOWLEDGE.md](REGULATORY_KNOWLEDGE.md).

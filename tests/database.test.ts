@@ -54,7 +54,13 @@ async function currentRegistry() {
   const rows = (
     await db.query<RegulatorySource>("select * from public.regulatory_sources")
   ).rows;
-  for (const source of rows)
+  // FDA Guidance stays DRAFT until parser output receives its dedicated expert review.
+  // These generic registry lifecycle tests use only regulation sources as synthetic fixtures.
+  const promotable = rows.filter(
+    (source) =>
+      !(source.authority === "FDA" && source.document_type === "guidance"),
+  );
+  for (const source of promotable)
     await call(db, "vexim_save_source", [
       {
         ...source,
@@ -66,7 +72,7 @@ async function currentRegistry() {
       },
     ]);
   await actor(db, ids.regB);
-  for (const source of rows)
+  for (const source of promotable)
     await call(db, "vexim_approve_source", [source.id]);
 }
 async function activateRules() {
@@ -75,7 +81,31 @@ async function activateRules() {
   const rules = (
     await db.query<ComplianceRule>("select * from public.compliance_rules")
   ).rows;
-  for (const rule of rules) await call(db, "vexim_save_rule", [rule]);
+  const currentSourceIds = new Set(
+    (
+      await db.query<{ id: string }>(
+        "select id from public.regulatory_sources where status='CURRENT' and approved_by is not null",
+      )
+    ).rows.map((source) => source.id),
+  );
+  const fallbackCitation = (
+    await db.query<{ id: string }>(
+      "select id from public.regulatory_sources where status='CURRENT' and authority='eCFR' order by source_key limit 1",
+    )
+  ).rows[0]?.id;
+  if (!fallbackCitation)
+    throw new Error("Synthetic eCFR fixture is unavailable.");
+  for (const rule of rules) {
+    const citations = rule.source_citations.filter((id) =>
+      currentSourceIds.has(id),
+    );
+    await call(db, "vexim_save_rule", [
+      {
+        ...rule,
+        source_citations: citations.length ? citations : [fallbackCitation],
+      },
+    ]);
+  }
   await actor(db, null, "service_role");
   for (const rule of rules) {
     const fresh = (

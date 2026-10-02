@@ -401,7 +401,8 @@ export function SourcesPage() {
           <>
             {selected.raw_snapshot_id && (
               <InlineNotice tone="info">
-                Nguồn từ API · issue {selected.issue_date} ·{" "}
+                Nguồn từ API · issue {selected.issue_date ?? "không áp dụng"} ·
+                revision {selected.document_revision_date ?? selected.document_revision_label ?? "không có"} ·{" "}
                 {selected.ingestion_status}. Raw SHA-256:{" "}
                 <code style={{ overflowWrap: "anywhere" }}>
                   {selected.raw_content_hash}

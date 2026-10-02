@@ -24,6 +24,8 @@ const jobSchema = z
       "ecfr_section",
       "ecfr_discovery",
       "fr_monitor",
+      "fda_label_claims_html",
+      "fda_food_label_guide_pdf",
     ]),
     params: z
       .object({

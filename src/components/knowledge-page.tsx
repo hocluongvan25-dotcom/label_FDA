@@ -440,6 +440,12 @@ export function KnowledgePage() {
               eCFR · discovery & legal search
             </option>
             <option value="fr_monitor">Federal Register · theo dõi FDA</option>
+            <option value="fda_label_claims_html">
+              FDA Guidance · Label Claims (HTML)
+            </option>
+            <option value="fda_food_label_guide_pdf">
+              FDA Guidance · Food Labeling Guide (PDF)
+            </option>
           </Select>
           {kind === "ecfr_section" && (
             <Select
@@ -505,6 +511,14 @@ export function KnowledgePage() {
             <Checkbox checked={force} onChange={setForce}>
               Bỏ cache để kiểm tra lại raw body / hash
             </Checkbox>
+          )}
+          {(kind === "fda_label_claims_html" ||
+            kind === "fda_food_label_guide_pdf") && (
+            <InlineNotice tone="warning">
+              FDA Guidance chỉ là tài liệu diễn giải, không phải 21 CFR. Kết quả
+              chỉ được lưu DRAFT để chuyên gia xem parser output; không vào RAG,
+              không tạo/active rules và không tự kết luận compliance/vi phạm.
+            </InlineNotice>
           )}
           <Button
             loading={busy}
@@ -627,7 +641,9 @@ export function KnowledgePage() {
                           <Badge>
                             {s.source_family === "ecfr"
                               ? "eCFR"
-                              : "FR · monitor only"}
+                              : s.source_family === "federal_register"
+                                ? "FR · monitor only"
+                                : `FDA Guidance · ${String(s.metadata.format ?? "HTML/PDF")}`}
                           </Badge>
                         </div>
                         <p>{s.title}</p>
@@ -980,7 +996,13 @@ export function KnowledgePage() {
               <Badge tone={tone(snap.status)}>
                 {labels[snap.status] ?? snap.status}
               </Badge>
-              <Badge>{snap.source_family}</Badge>
+              <Badge>
+                {snap.source_family === "ecfr"
+                  ? "eCFR"
+                  : snap.source_family === "federal_register"
+                    ? "Federal Register · monitor only"
+                    : `FDA Guidance · ${String(snap.metadata.format ?? "format unknown")}`}
+              </Badge>
               {snap.metadata.simulation === true && (
                 <Badge tone="amber">MÔ PHỎNG · KHÔNG PHẢI NGUỒN THẬT</Badge>
               )}
@@ -1002,6 +1024,39 @@ export function KnowledgePage() {
                 <dt>Issue date</dt>
                 <dd>{snap.issue_date ?? "Không có issue date"}</dd>
               </div>
+              <div>
+                <dt>Document revision date</dt>
+                <dd>
+                  {snap.document_revision_date ?? "Không có ngày dạng YYYY-MM-DD"}
+                  {snap.document_revision_label && (
+                    <> · Document label: {snap.document_revision_label}</>
+                  )}
+                  {typeof snap.metadata.revision_date_source === "string" && (
+                    <>
+                      <br />Nguồn metadata: {snap.metadata.revision_date_source}
+                    </>
+                  )}
+                </dd>
+              </div>
+              {snap.source_family === "fda_guidance" && (
+                <>
+                  <div>
+                    <dt>Authority</dt>
+                    <dd>{String(snap.metadata.authority ?? "FDA")}</dd>
+                  </div>
+                  <div>
+                    <dt>Issuing agency</dt>
+                    <dd>{String(snap.metadata.issuing_agency ?? "FDA")}</dd>
+                  </div>
+                  <div>
+                    <dt>Document type · format</dt>
+                    <dd>
+                      {String(snap.metadata.document_type ?? "GUIDANCE")} ·{" "}
+                      {String(snap.metadata.format ?? "—")}
+                    </dd>
+                  </div>
+                </>
+              )}
               <div>
                 <dt>Retrieved at</dt>
                 <dd>
@@ -1054,6 +1109,15 @@ export function KnowledgePage() {
                     : "Chưa có metadata kích thước raw body"}
                 </dd>
               </div>
+              {snap.source_family === "fda_guidance" && (
+                <div>
+                  <dt>Verified MIME · HTTP Last-Modified</dt>
+                  <dd>
+                    {String(snap.metadata.raw_content_type ?? "—")} ·{" "}
+                    {String(snap.metadata.raw_last_modified ?? "Không có header")}
+                  </dd>
+                </div>
+              )}
               <div className="knowledge-provenance-wide">
                 <dt>SHA-256 exact decoded response body</dt>
                 <dd>
@@ -1061,7 +1125,7 @@ export function KnowledgePage() {
                 </dd>
               </div>
               <div className="knowledge-provenance-wide">
-                <dt>API URL</dt>
+                <dt>{snap.source_family === "fda_guidance" ? "Fetch URL" : "API URL"}</dt>
                 <dd>
                   <a
                     href={snap.api_url}
@@ -1073,7 +1137,11 @@ export function KnowledgePage() {
                 </dd>
               </div>
               <div className="knowledge-provenance-wide">
-                <dt>Canonical URL · edition pinned</dt>
+                <dt>
+                  {snap.source_family === "ecfr"
+                    ? "Canonical URL · edition pinned"
+                    : "Canonical source URL"}
+                </dt>
                 <dd>
                   <a
                     href={snap.canonical_url}
@@ -1086,13 +1154,26 @@ export function KnowledgePage() {
               </div>
               {selected?.source_links?.length ? (
                 <div className="knowledge-provenance-wide">
-                  <dt>Source IDs by section</dt>
+                  <dt>
+                    {snap.source_family === "ecfr"
+                      ? "Source IDs by section"
+                      : "Source IDs by heading / PDF page"}
+                  </dt>
                   <dd>
-                    {selected.source_links.map((link) => (
-                      <div key={`${link.section}:${link.source_id}`}>
-                        21 CFR {link.section} · <code>{link.source_id}</code>
-                      </div>
-                    ))}
+                    {snap.source_family === "ecfr" ? (
+                      selected.source_links.map((link) => (
+                        <div key={`${link.section}:${link.source_id}`}>
+                          21 CFR {link.section} · <code>{link.source_id}</code>
+                        </div>
+                      ))
+                    ) : (
+                      <>
+                        {selected.source_links.length} parsed sections/pages ·{" "}
+                        <code>
+                          {[...new Set(selected.source_links.map((link) => link.source_id))].join(", ")}
+                        </code>
+                      </>
+                    )}
                   </dd>
                 </div>
               ) : null}
@@ -1124,6 +1205,46 @@ export function KnowledgePage() {
               </>
             ) : (
               <>
+                {snap.source_family === "fda_guidance" ? (
+                  <>
+                    <InlineNotice tone="warning">
+                      Nguồn, snapshot và chunks vẫn DRAFT; parser không tự phê duyệt,
+                      không tạo/active rules và không cấp RAG visibility. FDA Guidance
+                      là tài liệu diễn giải, không phải 21 CFR. Parser không kết luận
+                      về tình trạng tuân thủ hoặc vi phạm; health/disease claims cần
+                      chuyên gia đánh giá.
+                    </InlineNotice>
+                    <div className="knowledge-validation">
+                      <strong>Parser coverage · chưa phải expert review</strong>
+                      <Badge
+                        tone={snap.validation_results.coverage_complete === true ? "green" : "red"}
+                      >
+                        Coverage · {snap.validation_results.coverage_complete === true ? "ĐẠT" : "CHƯA ĐẠT"}
+                      </Badge>
+                      <Badge
+                        tone={snap.validation_results.citations_valid === true ? "green" : "red"}
+                      >
+                        Citations · {snap.validation_results.citations_valid === true ? "ĐẠT" : "CHƯA ĐẠT"}
+                      </Badge>
+                      <Badge tone="amber">Source status · DRAFT</Badge>
+                      <p>
+                        Format {String(snap.metadata.format ?? "—")} · headings {String(snap.validation_results.heading_count ?? "—")} ·
+                        pages {String(snap.validation_results.page_count ?? "—")} ·
+                        PDF pages with text {String(snap.validation_results.text_page_count ?? "—")}/{String(snap.validation_results.page_count ?? "—")} ·
+                        sections {String(snap.validation_results.section_count ?? "—")} · chunks {String(snap.validation_results.chunk_count ?? snap.chunk_count)} ·
+                        coverage {typeof snap.validation_results.coverage_ratio === "number" ? `${(snap.validation_results.coverage_ratio * 100).toFixed(1)}%` : "—"}.
+                      </p>
+                    </div>
+                    {snap.source_key === "fda-label-claims" && (
+                      <InlineNotice tone="info">
+                        Nội dung health/disease claim chỉ là tín hiệu để chuyển expert
+                        review. Không tạo finding kết luận vi phạm khi chưa có chuyên
+                        gia xác nhận.
+                      </InlineNotice>
+                    )}
+                  </>
+                ) : (
+                  <>
                 <div className="knowledge-validation">
                   <strong>Kiểm tra tự động</strong>
                   {[
@@ -1201,6 +1322,8 @@ export function KnowledgePage() {
                       </Button>
                     )}
                 </div>
+                  </>
+                )}
                 {Array.isArray(snap.validation_results.warnings) &&
                   snap.validation_results.warnings.length > 0 && (
                     <InlineNotice tone="warning">
@@ -1229,6 +1352,8 @@ export function KnowledgePage() {
                       <small>
                         Chunk SHA {c.chunk_content_hash?.slice(0, 18)}… ·{" "}
                         {c.topic}
+                        <br />
+                        Anchor: <code style={{ overflowWrap: "anywhere" }}>{c.source_anchor}</code>
                       </small>
                     </article>
                   ))}

@@ -41,6 +41,7 @@ export interface KnowledgeDetail {
     status: string;
     test_status: string;
   }[];
+  source_links: { section: string; source_id: string }[];
 }
 interface DemoKnowledge extends KnowledgeDashboard {
   chunks: KnowledgeChunkView[];
@@ -110,6 +111,7 @@ export function detailKnowledgeDemo(
     offset,
     page_size: 50,
     affected_rules: [],
+    source_links: [],
     regression: {
       passed: true,
       rule_refs: [],

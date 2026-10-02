@@ -28,7 +28,7 @@ import {
   Textarea,
 } from "./ui";
 import { api } from "@/lib/supabase";
-import { errorMessage, formatDate } from "@/lib/utils";
+import { errorMessage, formatBytes, formatDate } from "@/lib/utils";
 import type {
   IngestionKind,
   KnowledgeDashboard,
@@ -987,34 +987,81 @@ export function KnowledgePage() {
             </div>
             <dl className="knowledge-provenance">
               <div>
-                <dt>Edition / issue date</dt>
-                <dd>{snap.issue_date ?? "Không áp dụng (FR metadata)"}</dd>
+                <dt>Snapshot ID</dt>
+                <dd>
+                  <code>{snap.id}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Raw response ID</dt>
+                <dd>
+                  <code>{snap.raw_response_id}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Issue date</dt>
+                <dd>{snap.issue_date ?? "Không có issue date"}</dd>
               </div>
               <div>
                 <dt>Retrieved at</dt>
-                <dd>{formatDate(snap.retrieved_at)}</dd>
-              </div>
-              <div>
-                <dt>Effective from / to</dt>
                 <dd>
-                  {snap.effective_from ?? "Unknown"} →{" "}
-                  {snap.effective_to ?? "Chưa có mốc kết thúc"}
+                  {formatDate(snap.retrieved_at, true)} (GMT+7)
+                  <br />
+                  <code>{snap.retrieved_at}</code>
                 </dd>
               </div>
               <div>
-                <dt>Source version / parser</dt>
+                <dt>Effective date</dt>
                 <dd>
-                  {snap.source_version} · {snap.parser_version ?? "Chưa parse"}
+                  {snap.effective_date_unknown ? (
+                    <Badge tone="amber">UNKNOWN — cần xác minh</Badge>
+                  ) : (
+                    <>
+                      {snap.effective_from ?? "Chưa ghi nhận ngày bắt đầu"} →{" "}
+                      {snap.effective_to ?? "chưa có ngày kết thúc"}
+                    </>
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Source version</dt>
+                <dd>{snap.source_version}</dd>
+              </div>
+              <div>
+                <dt>Parser version</dt>
+                <dd>{snap.parser_version ?? "Chưa parse"}</dd>
+              </div>
+              <div>
+                <dt>Snapshot status</dt>
+                <dd>
+                  <Badge tone={tone(snap.status)}>
+                    {snap.status} · {labels[snap.status] ?? snap.status}
+                  </Badge>
+                </dd>
+              </div>
+              <div>
+                <dt>Chunk count</dt>
+                <dd>
+                  {snap.chunk_count} stored ·{" "}
+                  {selected?.total_count ?? snap.chunk_count} loaded
+                </dd>
+              </div>
+              <div>
+                <dt>Raw body size</dt>
+                <dd>
+                  {typeof snap.metadata.raw_body_size_bytes === "number"
+                    ? `${snap.metadata.raw_body_size_bytes.toLocaleString("vi-VN")} bytes (${formatBytes(snap.metadata.raw_body_size_bytes)})`
+                    : "Chưa có metadata kích thước raw body"}
                 </dd>
               </div>
               <div className="knowledge-provenance-wide">
-                <dt>Raw SHA-256</dt>
+                <dt>SHA-256 exact decoded response body</dt>
                 <dd>
                   <code>{snap.content_hash}</code>
                 </dd>
               </div>
               <div className="knowledge-provenance-wide">
-                <dt>API request · đúng snapshot</dt>
+                <dt>API URL</dt>
                 <dd>
                   <a
                     href={snap.api_url}
@@ -1025,6 +1072,30 @@ export function KnowledgePage() {
                   </a>
                 </dd>
               </div>
+              <div className="knowledge-provenance-wide">
+                <dt>Canonical URL · edition pinned</dt>
+                <dd>
+                  <a
+                    href={snap.canonical_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {snap.canonical_url}
+                  </a>
+                </dd>
+              </div>
+              {selected?.source_links?.length ? (
+                <div className="knowledge-provenance-wide">
+                  <dt>Source IDs by section</dt>
+                  <dd>
+                    {selected.source_links.map((link) => (
+                      <div key={`${link.section}:${link.source_id}`}>
+                        21 CFR {link.section} · <code>{link.source_id}</code>
+                      </div>
+                    ))}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
             {snap.source_family === "federal_register" ? (
               <>
@@ -1068,7 +1139,22 @@ export function KnowledgePage() {
                     </Badge>
                   ))}
                   <p>
-                    Regression kiểm tra code bằng fixtures, không xác nhận
+                    Sections:{" "}
+                    {String(snap.validation_results.section_count ?? "—")} ·
+                    paragraphs:{" "}
+                    {String(snap.validation_results.paragraph_count ?? "—")} ·
+                    chunks:{" "}
+                    {String(
+                      snap.validation_results.chunk_count ?? snap.chunk_count,
+                    )}{" "}
+                    · missing:{" "}
+                    {Array.isArray(snap.validation_results.missing_sections) &&
+                    snap.validation_results.missing_sections.length
+                      ? snap.validation_results.missing_sections
+                          .map(String)
+                          .join(", ")
+                      : "none"}
+                    . Regression kiểm tra code bằng fixtures, không xác nhận
                     interpretation của phiên bản luật mới. Cần chuyên viên đối
                     chiếu riêng.
                   </p>

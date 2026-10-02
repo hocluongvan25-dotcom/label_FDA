@@ -236,6 +236,7 @@ export async function processRegulatoryIngestion(
       section: section ?? null,
       titles_response_id: titles.meta.id,
       structure_response_id: structure.meta.id,
+      raw_body_size_bytes: document.meta.byte_size,
     },
   });
   if (!["FETCHED", "PARSE_FAILED"].includes(snapshot.status))

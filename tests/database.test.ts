@@ -150,13 +150,114 @@ describe("PostgreSQL migrations and tenant/RBAC boundaries", () => {
           s.retrieved_at === null,
       ),
     ).toBe(true);
-    expect(
-      (
-        await db.query<Record<string, unknown>>(
-          "select * from public.compliance_rules",
-        )
-      ).rows,
-    ).toHaveLength(15);
+    const rules = (
+      await db.query<Record<string, unknown>>(
+        "select * from public.compliance_rules",
+      )
+    ).rows;
+    expect(rules).toHaveLength(15);
+    const diseaseRule = (
+      await db.query<{ action_json: Record<string, unknown> }>(
+        "select action_json from public.compliance_rules where rule_key='CLAIM-001'",
+      )
+    ).rows[0];
+    expect(diseaseRule.action_json.severity).toBe("information");
+    expect(diseaseRule.action_json.suggested_action).toContain(
+      "không kết luận vi phạm",
+    );
+  });
+  it("keeps pre-screening off by default and requires a staging-only system-admin allowlist", async () => {
+    await actor(db, null, "service_role");
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(false);
+
+    await actor(db, ids.admin);
+    await call(db, "vexim_set_triage_pre_screening", [
+      true,
+      "staging",
+      [ids.orgA],
+    ]);
+    await actor(db, null, "service_role");
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(true);
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgB])).toBe(false);
+
+    await actor(db, ids.admin);
+    await expect(
+      call(db, "vexim_set_triage_pre_screening", [
+        true,
+        "production",
+        [ids.orgA],
+      ]),
+    ).rejects.toThrow(/staging/i);
+  });
+  it("persists AUTO_SCREENED only as a separate pre-screening artifact behind the staging allowlist", async () => {
+    const state = await submit(db);
+    await actor(db, ids.admin);
+    await call(db, "vexim_set_triage_pre_screening", [
+      true,
+      "staging",
+      [ids.orgA],
+    ]);
+    await actor(db, null, "service_role");
+    const job = await call<{ id: string }>(db, "vexim_claim_job", [
+      "triage-artifact-test",
+    ]);
+    await call(db, "vexim_mark_file_scanned", [
+      job.id,
+      "triage-artifact-test",
+      state.label.original_files[0].id,
+      "clean",
+      1,
+    ]);
+    const evaluatedAt = new Date().toISOString();
+    const triage = {
+      triage_route: "AUTO_SCREENED",
+      overall_result: "NO_AUTOMATED_ISSUE_DETECTED",
+      report_status: "PRE_SCREENING_ISSUED",
+      expert_review_status: "NOT_REQUIRED",
+      policy_version: "risk-based-triage/1.0.0",
+      risk_score: 0,
+      evaluated_at: evaluatedAt,
+      reasons: [],
+      customer_questions: [],
+    };
+    const artifact = {
+      schema_version: "pre-screening/1.0.0",
+      disclaimer_profile: "PRE_SCREENING_ONLY",
+      triage_route: "AUTO_SCREENED",
+      overall_result: "NO_AUTOMATED_ISSUE_DETECTED",
+      disclaimer: {
+        vi: "Chỉ là kết quả sàng lọc sơ bộ tự động.",
+        en: "Automated pre-screening only.",
+      },
+      findings: [],
+    };
+    await call(db, "vexim_complete_triage", [
+      job.id,
+      "triage-artifact-test",
+      [],
+      [],
+      "{}",
+      triage,
+      artifact,
+    ]);
+    const review = (
+      await db.query<Record<string, unknown>>(
+        "select status,triage_route,overall_result,report_status,expert_review_status from public.reviews where id=$1",
+        [state.review.id],
+      )
+    ).rows[0];
+    expect(review).toMatchObject({
+      status: "AI_REVIEW_READY",
+      triage_route: "AUTO_SCREENED",
+      overall_result: "NO_AUTOMATED_ISSUE_DETECTED",
+      report_status: "PRE_SCREENING_ISSUED",
+      expert_review_status: "NOT_REQUIRED",
+    });
+    expect((await db.query("select * from public.pre_screening_reports")).rows).toHaveLength(1);
+    expect((await db.query("select * from public.reports")).rows).toHaveLength(0);
+    await expect(
+      query("delete from public.pre_screening_reports where review_id=$1", [state.review.id]),
+    ).rejects.toThrow(/append-only/);
   });
   it("ignores spoofed staff roles in auth user metadata", async () => {
     await actor(db, ids.customerA);
@@ -707,6 +808,18 @@ describe("Registry QA, independent approvals, and final report gates", () => {
         )
       ).rows[0].status,
     ).toBe("APPROVED_WITH_NOTES");
+    expect(
+      (
+        await db.query<Record<string, unknown>>(
+          "select overall_result,report_status,expert_review_status from public.reviews where id=$1",
+          [state.review.id],
+        )
+      ).rows[0],
+    ).toMatchObject({
+      overall_result: "NO_ISSUE_DETECTED_IN_SCOPE",
+      report_status: "FINAL_REPORT_ISSUED",
+      expert_review_status: "EXPERT_REVIEWED",
+    });
     await actor(db, null, "service_role");
     await expect(
       query("update public.reports set snapshot='{}' where id=$1", [report.id]),

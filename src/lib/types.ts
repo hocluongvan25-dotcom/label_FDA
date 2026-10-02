@@ -30,6 +30,43 @@ export type ProductCategory =
   | "other";
 export type SourceStatus = "DRAFT" | "CURRENT" | "SUPERSEDED" | "UNAVAILABLE";
 export type RuleStatus = "DRAFT" | "ACTIVE" | "SUPERSEDED";
+export type TriageRoute =
+  | "OUT_OF_SCOPE"
+  | "BLOCKED_REGULATORY_SOURCE"
+  | "EXPERT_REVIEW_REQUIRED"
+  | "NEEDS_CUSTOMER_INFORMATION"
+  | "AUTO_SCREENED";
+export type TriageOverallResult =
+  | "NOT_ASSESSED"
+  | "NO_AUTOMATED_ISSUE_DETECTED"
+  | "POTENTIAL_ISSUES_FOUND"
+  | "NO_ISSUE_DETECTED_IN_SCOPE"
+  | "NEEDS_CORRECTION"
+  | "INSUFFICIENT_INFORMATION"
+  | "BLOCKED"
+  | "OUT_OF_SCOPE";
+export type TriageReportStatus =
+  | "NOT_ISSUED"
+  | "BLOCKED"
+  | "DISABLED"
+  | "PRE_SCREENING_ISSUED"
+  | "FINAL_REPORT_ISSUED";
+export type ExpertReviewStatus =
+  | "NOT_REQUIRED"
+  | "PENDING"
+  | "IN_PROGRESS"
+  | "EXPERT_REVIEWED";
+export interface TriageReason {
+  gate:
+    | "OUT_OF_SCOPE"
+    | "BLOCKED_REGULATORY_SOURCE"
+    | "EXPERT_REVIEW_REQUIRED"
+    | "NEEDS_CUSTOMER_INFORMATION";
+  code: string;
+  message: string;
+  source_id?: string;
+  rule_key?: string;
+}
 export type ClaimClass =
   | "MARKETING_ONLY"
   | "NUTRIENT_CONTENT_CLAIM"
@@ -197,6 +234,14 @@ export interface Review {
   label_version_id: string;
   review_scope: "us_federal_food_labeling_mvp";
   status: ReviewStatus;
+  triage_route?: TriageRoute;
+  overall_result?: TriageOverallResult;
+  report_status?: TriageReportStatus;
+  expert_review_status?: ExpertReviewStatus;
+  triage_reasons?: TriageReason[];
+  triage_risk_score?: number;
+  triage_policy_version?: string;
+  triage_evaluated_at?: string | null;
   progress: number;
   assigned_to: string;
   created_at: string;
@@ -216,9 +261,25 @@ export interface Review {
       id: string;
       version: number;
       content_hash: string | null;
+      snapshot_id?: string;
+      raw_content_hash?: string | null;
+      issue_date?: string | null;
+      parser_version?: string | null;
     }[];
   }[];
   missing_information?: string[];
+}
+export interface PreScreeningReport {
+  id: string;
+  review_id: string;
+  organization_id: string;
+  product_id: string;
+  label_version_id: string;
+  triage_run_id: string;
+  version: number;
+  disclaimer_profile: "PRE_SCREENING_ONLY";
+  snapshot: Record<string, unknown>;
+  created_at: string;
 }
 export interface RegulatorySource {
   api_url?: string | null;
@@ -268,6 +329,7 @@ export interface ComplianceRule {
     content_hash: string | null;
   }[];
   definition_hash?: string;
+  test_hash?: string | null;
   status: RuleStatus;
   effective_from: string | null;
   effective_to: string | null;
@@ -348,6 +410,7 @@ export interface AppData {
   rules: ComplianceRule[];
   requests: CustomerRequest[];
   reports: Report[];
+  preScreeningReports?: PreScreeningReport[];
   audit: AuditEntry[];
 }
 export interface OcrBlock {

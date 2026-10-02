@@ -53,6 +53,7 @@ import {
 import { clearLocalFiles, getLocalFile, putLocalFile } from "@/lib/storage";
 import { extractFromOcr } from "@/lib/extraction";
 import { evaluateRules } from "@/lib/rules-engine";
+import { evaluateTriage } from "@/lib/triage";
 import { validateIntake, findingPatchSchema } from "@/lib/validation";
 import { buildReportSnapshot } from "@/lib/reports";
 import { assertTransition } from "@/lib/workflow";
@@ -642,6 +643,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
     let fields: ExtractedField[] = label.extracted_fields;
+    let localOcrConfidence: number | null = null;
+    let localOcrPages: number | null = null;
     try {
       if (start <= 0) {
         changeStep(
@@ -718,6 +721,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               message,
             ),
           );
+          localOcrConfidence = ocr.confidence;
+          localOcrPages = ocr.pages;
           fields = extractFromOcr(ocr);
           changeStep(
             "ocr",
@@ -745,6 +750,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (!fields.length)
         throw new Error("Chưa có structured extraction. Chạy lại từ OCR.");
+      if (localOcrConfidence === null) {
+        const observed = fields.filter(
+          (field) => field.value && field.evidence.kind === "observed",
+        );
+        localOcrConfidence = observed.length
+          ? observed.reduce((sum, field) => sum + field.confidence, 0) /
+            observed.length
+          : null;
+        localOcrPages = label.normalized_files.length ||
+          label.original_files.reduce((sum, file) => sum + file.page_count, 0);
+      }
       changeStep("rules", "running", 75, "Chạy bộ quy tắc đang có hiệu lực.");
       const current = dataRef.current;
       const output = evaluateRules({
@@ -771,6 +787,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             content_hash: s.content_hash,
           })),
       }));
+      const decision = evaluateTriage({
+        product,
+        fields,
+        findings: output.findings,
+        rules: current.rules,
+        sources: current.sources,
+        rule_snapshot: executed,
+        parser_quality: [],
+        ocr_confidence: localOcrConfidence,
+        ocr_pages: localOcrPages,
+        expected_pages: label.original_files.reduce(
+          (sum, file) => sum + file.page_count,
+          0,
+        ),
+      });
+      const completionWarnings = [
+        ...new Set([...output.warnings, ...decision.customer_questions]),
+      ];
+      const routeStatus = {
+        OUT_OF_SCOPE: "MANUAL_ESCALATION_REQUIRED",
+        BLOCKED_REGULATORY_SOURCE: "SOURCE_UNAVAILABLE",
+        EXPERT_REVIEW_REQUIRED: "MANUAL_ESCALATION_REQUIRED",
+        NEEDS_CUSTOMER_INFORMATION: "WAITING_FOR_CUSTOMER",
+        AUTO_SCREENED: "AI_REVIEW_READY",
+      } as const;
       commit((d) => {
         d.findings = [
           ...d.findings.filter((f) => f.review_id !== reviewId),
@@ -778,7 +819,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ];
         const rv = d.reviews.find((r) => r.id === reviewId)!;
         rv.rule_snapshot = executed;
-        rv.missing_information = output.warnings;
+        rv.missing_information = completionWarnings;
+        rv.triage_route = decision.triage_route;
+        rv.overall_result = decision.overall_result;
+        rv.report_status = decision.report_status;
+        rv.expert_review_status = decision.expert_review_status;
+        rv.triage_reasons = decision.reasons;
+        rv.triage_risk_score = decision.risk_score;
+        rv.triage_policy_version = decision.policy_version;
+        rv.triage_evaluated_at = decision.evaluated_at;
+        rv.status = routeStatus[decision.triage_route];
+        rv.progress = 100;
+        rv.updated_at = now();
+        rv.error_message =
+          decision.triage_route === "BLOCKED_REGULATORY_SOURCE"
+            ? "Nguồn hoặc bộ quy tắc chưa đủ điều kiện phát hành sàng lọc tự động."
+            : decision.triage_route === "OUT_OF_SCOPE"
+              ? "Sản phẩm nằm ngoài phạm vi tự động hiện được hỗ trợ."
+              : null;
+        d.labelVersions.find((v) => v.id === label.id)!.status = "under_review";
         for (const fired of output.rules_executed.filter((e) => e.fired))
           log(
             d,
@@ -788,50 +847,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             `${fired.rule_key} v${fired.version} phát hiện rủi ro · ${product.name}`,
             product.organization_id,
           );
-      });
-      changeStep(
-        "rules",
-        "complete",
-        88,
-        `${output.rules_executed.length} quy tắc; ${output.findings.length} finding.`,
-      );
-      changeStep(
-        "verification",
-        "running",
-        94,
-        "Kiểm tra evidence, citation, scope và kết luận tuyệt đối.",
-      );
-      changeStep(
-        "verification",
-        "complete",
-        100,
-        "Kết quả phải được chuyên viên xác nhận; không có tự động phê duyệt.",
-      );
-      commit((d) => {
-        const rv = d.reviews.find((r) => r.id === reviewId)!;
-        rv.status =
-          product.classification_status !== "conventional_food"
-            ? "MANUAL_ESCALATION_REQUIRED"
-            : executed.length < 15
-              ? "SOURCE_UNAVAILABLE"
-              : "HUMAN_REVIEW";
-        rv.progress = 100;
-        rv.updated_at = now();
-        if (executed.length < 15)
-          rv.error_message =
-            "Bộ quy tắc hiện hành chưa đủ 15 rules. Cần Regulatory Admin xác minh và kích hoạt trước khi kết luận.";
-        d.labelVersions.find((v) => v.id === label.id)!.status = "under_review";
         log(
           d,
           "review.processed",
           "review",
           reviewId,
-          `Hoàn thành kiểm tra sơ bộ · ${product.name} · ${output.findings.length} finding`,
+          `Hoàn thành triage · ${product.name} · ${decision.triage_route}`,
           product.organization_id,
-          { ruleset: executed, warnings: output.warnings },
+          {
+            ruleset: executed,
+            warnings: completionWarnings,
+            triage_route: decision.triage_route,
+            overall_result: decision.overall_result,
+            reasons: decision.reasons,
+            policy_version: decision.policy_version,
+          },
         );
       });
-      notify(`Đã phân tích ${product.name}. Cần chuyên viên rà soát.`, "info");
+      const notification =
+        decision.triage_route === "AUTO_SCREENED"
+          ? "Đã phân luồng sàng lọc tự động; artifact chưa được phát hành trong chế độ mẫu."
+          : decision.triage_route === "NEEDS_CUSTOMER_INFORMATION"
+            ? "Cần bổ sung thông tin trước khi tiếp tục."
+            : decision.triage_route === "BLOCKED_REGULATORY_SOURCE"
+              ? "Nguồn hoặc quy tắc chưa đủ điều kiện; đã chặn phát hành tự động."
+              : decision.triage_route === "OUT_OF_SCOPE"
+                ? "Sản phẩm ngoài phạm vi hỗ trợ tự động."
+                : "Hồ sơ cần chuyên gia rà soát.";
+      notify(notification, "info");
     } catch (e) {
       const message = errorMessage(e);
       commit((d) => {
@@ -1222,7 +1265,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     commit((d) => {
-      d.reviews.find((r) => r.id === reviewId)!.status = status;
+      const current = d.reviews.find((r) => r.id === reviewId)!;
+      current.status = status;
+      if (status === "HUMAN_REVIEW" && current.expert_review_status === "NOT_REQUIRED")
+        current.expert_review_status = "PENDING";
       log(
         d,
         "review.status_changed",
@@ -1265,6 +1311,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       d.reports.unshift(report);
       const r = d.reviews.find((r) => r.id === reviewId)!;
       r.status = "COMPLETED";
+      r.overall_result = snapshot.result;
+      r.report_status = "FINAL_REPORT_ISSUED";
+      r.expert_review_status = "EXPERT_REVIEWED";
       r.approved_by = actorRef.current.id;
       r.approved_at = snapshot.reviewer.approved_at;
       r.approval_comment = comment;

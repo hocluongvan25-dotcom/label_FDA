@@ -1,4 +1,12 @@
-import type { ReviewStatus, Role, Severity } from "./types";
+import type {
+  ExpertReviewStatus,
+  ReviewStatus,
+  Role,
+  Severity,
+  TriageOverallResult,
+  TriageReportStatus,
+  TriageRoute,
+} from "./types";
 
 export const DISCLAIMER =
   "Đây là đánh giá sơ bộ trong phạm vi nhãn thực phẩm liên bang Hoa Kỳ, dựa trên dữ liệu được cung cấp, phiên bản nguồn và quy tắc tại thời điểm rà soát. Báo cáo không phải phê duyệt hoặc chứng nhận của FDA, không bảo đảm thông quan và không thay thế tư vấn pháp lý. Kết luận phải được chuyên viên Vexim xác nhận.";
@@ -74,6 +82,39 @@ export const STATUS_META: Record<
     short: "Cần chuyên gia",
     tone: "red",
   },
+};
+export const TRIAGE_ROUTE_META: Record<
+  TriageRoute,
+  { label: string; tone: string }
+> = {
+  OUT_OF_SCOPE: { label: "Ngoài phạm vi", tone: "neutral" },
+  BLOCKED_REGULATORY_SOURCE: { label: "Chặn do nguồn/quy tắc", tone: "red" },
+  EXPERT_REVIEW_REQUIRED: { label: "Cần chuyên gia", tone: "purple" },
+  NEEDS_CUSTOMER_INFORMATION: { label: "Cần khách bổ sung", tone: "amber" },
+  AUTO_SCREENED: { label: "Sàng lọc tự động · quy trình", tone: "blue" },
+};
+export const TRIAGE_RESULT_LABELS: Record<TriageOverallResult, string> = {
+  NOT_ASSESSED: "Chưa có kết quả cuối",
+  NO_AUTOMATED_ISSUE_DETECTED: "Chưa phát hiện tự động trong phạm vi",
+  POTENTIAL_ISSUES_FOUND: "Có điểm cần xem xét",
+  NO_ISSUE_DETECTED_IN_SCOPE: "Không ghi nhận vấn đề trong phạm vi rà soát",
+  NEEDS_CORRECTION: "Cần chỉnh sửa theo kết luận chuyên viên",
+  INSUFFICIENT_INFORMATION: "Chưa đủ thông tin",
+  BLOCKED: "Bị chặn bởi nguồn/quy tắc",
+  OUT_OF_SCOPE: "Ngoài phạm vi hỗ trợ",
+};
+export const TRIAGE_REPORT_STATUS_LABELS: Record<TriageReportStatus, string> = {
+  NOT_ISSUED: "Chưa phát hành artifact",
+  BLOCKED: "Đang chặn phát hành",
+  DISABLED: "Tính năng sàng lọc đang tắt",
+  PRE_SCREENING_ISSUED: "Đã tạo artifact sàng lọc sơ bộ",
+  FINAL_REPORT_ISSUED: "Đã phát hành báo cáo cuối",
+};
+export const EXPERT_REVIEW_STATUS_LABELS: Record<ExpertReviewStatus, string> = {
+  NOT_REQUIRED: "Chưa yêu cầu chuyên gia",
+  PENDING: "Chờ chuyên gia",
+  IN_PROGRESS: "Đang rà soát chuyên môn",
+  EXPERT_REVIEWED: "Đã được chuyên gia rà soát",
 };
 export const SEVERITY_META: Record<
   Severity,

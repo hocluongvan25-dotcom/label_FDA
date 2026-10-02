@@ -10,8 +10,16 @@ import type {
   Product,
   RegulatorySource,
   Review,
+  TriageReportStatus,
 } from "@/lib/types";
 import { evaluateRules, verifyFindings } from "@/lib/rules-engine";
+import {
+  buildPreScreeningSnapshot,
+  evaluateTriage,
+  mayIssuePreScreening,
+  runtimePreScreeningEnabled,
+  type RegulatoryParserQuality,
+} from "@/lib/triage";
 import {
   normalizeNodePages,
   validateOriginal,
@@ -329,7 +337,8 @@ export async function processJob(
       "Áp dụng bộ quy tắc đã duyệt và nguồn hiện hành.",
     );
     const [ruleResult, sourceResult] = await Promise.all([
-      db.from("compliance_rules").select("*").eq("status", "ACTIVE"),
+      // Triage needs inactive/DRAFT rows too so it can record every blocking reason.
+      db.from("compliance_rules").select("*"),
       db.from("regulatory_sources").select("*"),
     ]);
     if (ruleResult.error || sourceResult.error)
@@ -389,31 +398,127 @@ export async function processJob(
       output.warnings.push(
         "Malware scan chưa xác minh; không được cấp signed URL hoặc duyệt báo cáo thật.",
       );
+    const candidateSourceIds = [
+      ...new Set(
+        rules
+          .filter(
+            (rule) =>
+              rule.scope.includes(product.category) ||
+              rule.rule_key === "CLASS-001",
+          )
+          .flatMap((rule) => rule.source_citations),
+      ),
+    ];
+    const snapshotIds = [
+      ...new Set(
+        candidateSourceIds
+          .map((id) => sources.find((source) => source.id === id)?.raw_snapshot_id)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    const parserQuality: RegulatoryParserQuality[] = [];
+    if (snapshotIds.length) {
+      const snapshotResults = await Promise.all(
+        snapshotIds.map((snapshotId) =>
+          db
+            .from("regulatory_snapshots")
+            .select("id,status,parser_version,effective_date_unknown,validation_results")
+            .eq("id", snapshotId)
+            .maybeSingle(),
+        ),
+      );
+      for (const snapshotResult of snapshotResults) {
+        if (snapshotResult.error || !snapshotResult.data) continue;
+        const snapshot = snapshotResult.data as {
+          id: string;
+          status: string;
+          parser_version?: string | null;
+          effective_date_unknown?: boolean;
+          validation_results?: Record<string, unknown> | null;
+        };
+        const validation = snapshot.validation_results ?? {};
+        parserQuality.push({
+          snapshot_id: snapshot.id,
+          status: snapshot.status,
+          parser_version: snapshot.parser_version,
+          coverage_complete: validation.coverage_complete === true,
+          citations_valid: validation.citations_valid === true,
+          effective_date_unknown:
+            snapshot.effective_date_unknown === true ||
+            validation.effective_date_unknown === true,
+        });
+      }
+    }
+    const decision = evaluateTriage({
+      product,
+      fields,
+      findings: output.findings,
+      rules,
+      sources,
+      rule_snapshot: refs,
+      parser_quality: parserQuality,
+      ocr_confidence: ocr?.confidence ?? null,
+      ocr_pages: ocr?.pages ?? null,
+      expected_pages: originals.reduce((sum, file) => sum + file.page_count, 0),
+    });
+    const runtimeEnabled = runtimePreScreeningEnabled(process.env);
+    let databaseEnabled = false;
+    if (decision.triage_route === "AUTO_SCREENED" && runtimeEnabled) {
+      const allowed = await db.rpc("vexim_pre_screening_allowed", {
+        p_organization_id: review.organization_id,
+      });
+      databaseEnabled = !allowed.error && allowed.data === true;
+    }
+    const issuePreScreening = mayIssuePreScreening({
+      runtimeEnabled,
+      databaseEnabled,
+      organizationId: review.organization_id,
+      allowedOrganizationIds: databaseEnabled ? [review.organization_id] : [],
+    });
+    let reportStatus: TriageReportStatus = decision.report_status;
+    const preScreeningSnapshot = issuePreScreening
+      ? buildPreScreeningSnapshot({
+          reviewId: review.id,
+          labelVersionId: review.label_version_id,
+          decision: {
+            ...decision,
+            report_status: "PRE_SCREENING_ISSUED",
+          },
+          findings: output.findings,
+          ruleSnapshot: refs,
+        })
+      : null;
+    if (preScreeningSnapshot) reportStatus = "PRE_SCREENING_ISSUED";
+    const triageData = {
+      ...decision,
+      report_status: reportStatus,
+      customer_questions: decision.customer_questions,
+    };
+    const completionWarnings = [
+      ...new Set([...output.warnings, ...decision.customer_questions]),
+    ];
     await saveOutput("verification", {
       valid: true,
       source_refs: refs,
-      warnings: output.warnings,
+      warnings: completionWarnings,
+      triage: triageData,
       verified_at: new Date().toISOString(),
     });
-    await stageUpdate(
-      "verification",
-      "complete",
-      99,
-      "Verifier hoàn tất. Chuyển chuyên viên; không tự động phê duyệt.",
-    );
-    const target =
-      product.classification_status !== "conventional_food"
-        ? "MANUAL_ESCALATION_REQUIRED"
-        : refs.length < 15
-          ? "SOURCE_UNAVAILABLE"
-          : "HUMAN_REVIEW";
-    await rpc(db, "vexim_complete_rules", {
+    const verificationMessage =
+      decision.triage_route === "AUTO_SCREENED"
+        ? preScreeningSnapshot
+          ? "Triage hoàn tất; artifact PRE_SCREENING_ONLY đã được tạo theo allowlist staging."
+          : "Triage hoàn tất; chưa phát hành artifact vì pre-screening đang tắt hoặc chưa được allowlist."
+        : `Triage hoàn tất: ${decision.triage_route}. Không tự phê duyệt báo cáo cuối.`;
+    await stageUpdate("verification", "complete", 99, verificationMessage);
+    await rpc(db, "vexim_complete_triage", {
       jid: job.id,
       worker_id: workerId,
       new_findings: output.findings,
       rule_refs: refs,
-      warnings: output.warnings,
-      target,
+      warnings: completionWarnings,
+      triage_data: triageData,
+      pre_screening_snapshot: preScreeningSnapshot,
     });
   } finally {
     clearInterval(heartbeat);

@@ -99,8 +99,18 @@ it("executes all actual local worker stages against PostgreSQL and simulated pri
       ])
     ).rows[0];
     expect(review.status).toBe("SOURCE_UNAVAILABLE");
+    expect(review.triage_route).toBe("BLOCKED_REGULATORY_SOURCE");
+    expect(review.overall_result).toBe("BLOCKED");
+    expect(review.report_status).toBe("BLOCKED");
+    expect(review.expert_review_status).toBe("NOT_REQUIRED");
+    expect(review.triage_policy_version).toBe("risk-based-triage/1.0.0");
+    expect(review.triage_reasons?.map((reason) => reason.code)).toContain(
+      "ACTIVE_RULE_PACK_INCOMPLETE",
+    );
     expect(review.pipeline.every((s) => s.status === "complete")).toBe(true);
     expect(review.rule_snapshot).toEqual([]);
+    expect((await db.query("select * from public.review_triage_runs")).rows).toHaveLength(1);
+    expect((await db.query("select * from public.pre_screening_reports")).rows).toHaveLength(0);
     const fields = (
       await db.query(
         "select * from public.extracted_fields where label_version_id=$1",

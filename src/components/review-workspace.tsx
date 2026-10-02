@@ -59,13 +59,18 @@ import type {
 } from "@/lib/types";
 import {
   DISCLAIMER,
+  EXPERT_REVIEW_STATUS_LABELS,
   FINDING_STATUS_LABELS,
   PIPELINE_LABELS,
   SEVERITY_META,
+  TRIAGE_REPORT_STATUS_LABELS,
+  TRIAGE_RESULT_LABELS,
+  TRIAGE_ROUTE_META,
 } from "@/lib/constants";
 import { can } from "@/lib/permissions";
 import {
   assigneeName,
+  downloadJson,
   errorMessage,
   findingCounts,
   formatDate,
@@ -74,6 +79,7 @@ import {
   uid,
 } from "@/lib/utils";
 import { approvalIssues } from "@/lib/reports";
+import { PRE_SCREENING_DISCLAIMER } from "@/lib/triage";
 
 const fieldLabels: Record<string, string> = {
   statement_of_identity: "Tên gọi thực phẩm",
@@ -146,6 +152,9 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
         />
       </Card>
     );
+  const preScreeningReport = app.data.preScreeningReports
+    ?.filter((report) => report.review_id === review.id)
+    .sort((a, b) => b.version - a.version)[0];
   const counts = findingCounts(findings);
   const selected = findings.find((f) => f.id === selectedId);
   const filtered = findings.filter(
@@ -242,11 +251,31 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               <MessageSquarePlus size={14} /> Yêu cầu bổ sung
             </Button>
           )}
+          {can(app.actor, "review") && review.status === "AI_REVIEW_READY" && (
+            <Button
+              variant="secondary"
+              onClick={() =>
+                void app
+                  .transitionReview(
+                    review.id,
+                    "HUMAN_REVIEW",
+                    "Chuyển sang rà soát chuyên viên trước khi cân nhắc báo cáo cuối.",
+                  )
+                  .then(() => app.notify("Đã chuyển sang rà soát chuyên viên."))
+                  .catch((e) => app.notify(errorMessage(e), "error"))
+              }
+            >
+              <ShieldCheck size={14} /> Chuyển sang rà soát chuyên viên
+            </Button>
+          )}
           {can(app.actor, "review") && (
             <Button
               onClick={approve}
               disabled={
                 processing ||
+                !["HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+                  review.status,
+                ) ||
                 ["COMPLETED", "ARCHIVED", "APPROVED_WITH_NOTES"].includes(
                   review.status,
                 )
@@ -275,6 +304,85 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             </Link>
           </InlineNotice>
         </div>
+      )}
+      {review.triage_route && review.triage_evaluated_at && (
+        <Card style={{ marginBottom: 16, padding: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <div className="tiny muted">TRIAGE · {review.triage_policy_version}</div>
+              <h3 style={{ margin: "5px 0 8px" }}>Phân luồng hồ sơ</h3>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                <Badge tone={TRIAGE_ROUTE_META[review.triage_route].tone}>
+                  {TRIAGE_ROUTE_META[review.triage_route].label}
+                </Badge>
+                {review.overall_result && (
+                  <Badge tone="neutral">
+                    {TRIAGE_RESULT_LABELS[review.overall_result]}
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <div className="tiny muted" style={{ textAlign: "right" }}>
+              Rủi ro {review.triage_risk_score ?? 0}/100
+              <br />
+              Chuyên gia: {review.expert_review_status
+                ? EXPERT_REVIEW_STATUS_LABELS[review.expert_review_status]
+                : "Chưa ghi nhận"}
+              <br />
+              Artifact: {review.report_status
+                ? TRIAGE_REPORT_STATUS_LABELS[review.report_status]
+                : "Chưa ghi nhận"}
+            </div>
+          </div>
+          {review.triage_route === "AUTO_SCREENED" && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone={preScreeningReport ? "info" : "warning"}>
+                AUTO_SCREENED là route phân luồng, không phải kết luận tuân thủ.
+                {preScreeningReport
+                  ? ` Artifact riêng có disclaimer profile ${preScreeningReport.disclaimer_profile}.`
+                  : " Hiện chưa phát hành artifact vì cờ pre-screening đang tắt hoặc tổ chức chưa được allowlist."}
+              </InlineNotice>
+            </div>
+          )}
+          {!!review.triage_reasons?.length && (
+            <ul className="validation-list" style={{ marginTop: 12 }}>
+              {review.triage_reasons.map((reason, index) => (
+                <li key={`${reason.code}-${reason.source_id ?? index}`}>
+                  {reason.message}
+                  {reason.rule_key ? ` · ${reason.rule_key}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+          {preScreeningReport && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone="info">
+                <strong>Artifact sàng lọc sơ bộ · v{preScreeningReport.version}</strong>
+                <div style={{ marginTop: 5 }}>{PRE_SCREENING_DISCLAIMER.vi}</div>
+              </InlineNotice>
+              <Button
+                variant="secondary"
+                style={{ marginTop: 10 }}
+                onClick={() =>
+                  downloadJson(
+                    preScreeningReport.snapshot,
+                    `pre-screening-${review.id}-v${preScreeningReport.version}.json`,
+                  )
+                }
+              >
+                <FileText size={14} /> Tải artifact JSON
+              </Button>
+            </div>
+          )}
+        </Card>
       )}
       {!processing && (
         <div className="review-summary-strip">

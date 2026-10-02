@@ -402,9 +402,9 @@ export function createSeedData(): AppData {
     if (i === 0) {
       add(
         "CLAIM-001",
-        "Claim có dấu hiệu liên quan bệnh lý",
-        "Nhãn có nội dung “Naturally helps prevent diabetes”. Claim có dấu hiệu ngăn ngừa bệnh; bắt buộc chuyên gia xác nhận phân loại và yêu cầu sửa trước khi phát hành.",
-        "critical",
+        "Claim bệnh lý cần chuyên gia phân loại",
+        "Dữ liệu mẫu minh họa tín hiệu cần chuyển chuyên gia. Đây không phải kết luận vi phạm pháp luật; không tự động yêu cầu sửa khi chưa có rà soát chuyên môn.",
+        "information",
         "claim",
       );
       add(

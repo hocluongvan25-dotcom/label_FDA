@@ -42,7 +42,7 @@ import { PIPELINE_LABELS } from "@/lib/constants";
 export function Dashboard() {
   const { data, actor } = useApp();
   const [guide, setGuide] = useState(false);
-  const tasks = data.reviews.filter((r) => needsAction(r.status));
+  const tasks = data.reviews.filter((r) => needsAction(r.status, r.triage_route));
   const revision = data.reviews.filter((r) => r.status === "REVISION_REQUIRED");
   const complete = data.reviews.filter((r) => isCompleted(r.status));
   const priority = [...tasks]

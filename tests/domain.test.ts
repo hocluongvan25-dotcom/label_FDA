@@ -154,6 +154,22 @@ describe("Conservative domain checks and provenance", () => {
       expect(classifyClaim(claim).classification).toBe("DISEASE_CLAIM");
     },
   );
+  it("routes disease claims as expert-only signals without an automated violation finding", () => {
+    const f = fixture();
+    const result = evaluateRules({
+      product: { ...f.product, claims: ["Helps treat diabetes"] },
+      fields: f.fields,
+      rules: f.data.rules,
+      sources: f.data.sources,
+      reviewId: f.review.id,
+    });
+    expect(result.findings.some((finding) => finding.rule_key === "CLAIM-001")).toBe(
+      false,
+    );
+    expect(result.warnings).toContain(
+      "Phát hiện dấu hiệu claim bệnh lý; chuyển chuyên gia phân loại. Hệ thống không tự tạo finding vi phạm pháp luật.",
+    );
+  });
   it("English brand text alone does not verify all English required information", () => {
     const partial = {
       ...ocr,

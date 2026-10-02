@@ -1,4 +1,10 @@
-import type { Actor, AppData, Finding, ReviewStatus } from "./types";
+import type {
+  Actor,
+  AppData,
+  Finding,
+  ReviewStatus,
+  TriageRoute,
+} from "./types";
 import { SEVERITY_META } from "./constants";
 
 export const uid = () => crypto.randomUUID();
@@ -65,16 +71,21 @@ export function highestSeverity(findings: Finding[]) {
 }
 export const isCompleted = (status: ReviewStatus) =>
   ["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED"].includes(status);
-export const needsAction = (status: ReviewStatus) =>
-  [
-    "HUMAN_REVIEW",
-    "AI_REVIEW_READY",
-    "REVISION_REQUIRED",
-    "MANUAL_ESCALATION_REQUIRED",
-    "PROCESSING_FAILED",
-    "MODEL_FAILED",
-    "SOURCE_UNAVAILABLE",
-  ].includes(status);
+export const needsAction = (
+  status: ReviewStatus,
+  triageRoute?: TriageRoute,
+) =>
+  triageRoute === "AUTO_SCREENED" && status === "AI_REVIEW_READY"
+    ? false
+    : [
+        "HUMAN_REVIEW",
+        "AI_REVIEW_READY",
+        "REVISION_REQUIRED",
+        "MANUAL_ESCALATION_REQUIRED",
+        "PROCESSING_FAILED",
+        "MODEL_FAILED",
+        "SOURCE_UNAVAILABLE",
+      ].includes(status);
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

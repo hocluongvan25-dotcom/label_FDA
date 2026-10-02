@@ -14,6 +14,7 @@ import type {
   LabelVersion,
   Organization,
   Product,
+  PreScreeningReport,
   RegulatorySource,
   Report,
   Review,
@@ -205,6 +206,7 @@ export async function workspace(
     "findings",
     "customer_requests",
     "reports",
+    "pre_screening_reports",
     "audit_logs",
     "regulatory_sources",
     "compliance_rules",
@@ -304,6 +306,7 @@ export async function workspace(
       findings: values.findings as Finding[],
       requests: values.customer_requests as CustomerRequest[],
       reports: values.reports as Report[],
+      preScreeningReports: values.pre_screening_reports as PreScreeningReport[],
       audit: values.audit_logs as AuditEntry[],
       sources,
       rules: (values.compliance_rules as ComplianceRule[]).map((r) => ({

@@ -97,7 +97,7 @@ export function ReviewsPage() {
       const p = app.data.products.find((p) => p.id === r.product_id);
       return (
         (tab === "all" ||
-          (tab === "action" && needsAction(r.status)) ||
+          (tab === "action" && needsAction(r.status, r.triage_route)) ||
           (tab === "processing" &&
             ["PROCESSING", "WAITING_FOR_CUSTOMER"].includes(r.status)) ||
           (tab === "completed" && isCompleted(r.status))) &&
@@ -110,7 +110,7 @@ export function ReviewsPage() {
     [
       "action",
       "Cần xử lý",
-      app.data.reviews.filter((r) => needsAction(r.status)).length,
+      app.data.reviews.filter((r) => needsAction(r.status, r.triage_route)).length,
     ],
     [
       "processing",

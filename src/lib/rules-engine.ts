@@ -251,16 +251,8 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           };
         break;
       case "CLAIM-001": {
-        const c = classifications.find(
-          (c) => c.classification === "DISEASE_CLAIM",
-        );
-        if (c)
-          issue = {
-            title: "Claim có dấu hiệu liên quan bệnh lý",
-            description: `Phát hiện nội dung “${c.text}”. Bộ dò từ khóa xếp loại DISEASE_CLAIM; đây là cảnh báo rủi ro, không phải kết luận phân loại pháp lý. Bắt buộc chuyển chuyên gia.`,
-            evidence: [c.evidence],
-            confidence: c.confidence,
-          };
+        // Disease-claim detection is a triage signal only. Do not create an
+        // automated compliance/violation finding; triage sends it to an expert.
         break;
       }
       case "CLAIM-002": {
@@ -484,6 +476,14 @@ export function evaluateRules(input: RuleInput): RuleOutput {
     warnings.push("Bộ 15 quy tắc MVP chưa đầy đủ hoặc chưa có hiệu lực.");
   if (findings.some((f) => f.citation_pending))
     warnings.push("Có citation cần chuyên gia đối chiếu / phê duyệt nguồn.");
+  if (classifications.some((c) => c.classification === "DISEASE_CLAIM"))
+    warnings.push(
+      "Phát hiện dấu hiệu claim bệnh lý; chuyển chuyên gia phân loại. Hệ thống không tự tạo finding vi phạm pháp luật.",
+    );
+  if (classifications.some((c) => c.classification === "HEALTH_CLAIM"))
+    warnings.push(
+      "Phát hiện health claim; chuyển chuyên gia xác minh phạm vi và chứng cứ.",
+    );
   const uncertain = classifications.filter(
     (c) =>
       c.classification === "UNCERTAIN" ||

@@ -17,6 +17,10 @@ import { generateReportPdf } from "../src/lib/pdf-report";
 import { createSeedData } from "../src/lib/seed";
 import type { LabelFile } from "../src/lib/types";
 import { simulatedScanner } from "./helpers/scanner";
+import {
+  isSupabaseConfigured,
+  isSupabaseRequested,
+} from "../src/lib/supabase";
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -55,6 +59,7 @@ async function pdf(pages = 1) {
 describe("Server boundaries", () => {
   it("returns a real-mode setup error, never demo data from the API", async () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "");
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
     const response = await apiHandler(
       new Request("https://app.example/api/v1/workspace"),
@@ -64,6 +69,20 @@ describe("Server boundaries", () => {
     expect(await response.json()).toMatchObject({
       error: expect.stringContaining("Supabase"),
     });
+  });
+  it("accepts Supabase's current publishable-key env name", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://supabase.example");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "test-publishable-key");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_DEMO", "false");
+    expect(isSupabaseConfigured()).toBe(true);
+    expect(isSupabaseRequested()).toBe(true);
+    const response = await apiHandler(
+      new Request("https://app.example/api/v1/health"),
+      ["health"],
+    );
+    // The request reaches the auth boundary (401), rather than failing config (503).
+    expect(response.status).toBe(401);
   });
   it("requires a bearer token before any workspace/health query", async () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://supabase.example");

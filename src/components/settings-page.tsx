@@ -92,7 +92,7 @@ export function SettingsPage() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(
-        "NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co\nNEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY\n# Server/worker ONLY — never put service-role keys in NEXT_PUBLIC variables\nSUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY",
+        "NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co\nNEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLIC_PUBLISHABLE_KEY\n# Older projects may use NEXT_PUBLIC_SUPABASE_ANON_KEY instead.\n# Server/worker ONLY — never put service-role keys in NEXT_PUBLIC variables.\nSUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY",
       );
       app.notify(
         "Đã sao chép mẫu cấu hình. Điền khóa trong .env.local, không gửi khóa bí mật qua chat.",
@@ -194,8 +194,9 @@ export function SettingsPage() {
               </p>
               <pre className="code-block">
                 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co{"\n"}
-                NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY{"\n"}# Server
-                / worker only:{"\n"}
+                NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLIC_PUBLISHABLE_KEY{"\n"}
+                # Older projects may use NEXT_PUBLIC_SUPABASE_ANON_KEY{"\n"}
+                # Server / worker only:{"\n"}
                 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY
               </pre>
               <ol className="setup-steps">

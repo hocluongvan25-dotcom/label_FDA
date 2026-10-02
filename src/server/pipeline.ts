@@ -422,7 +422,7 @@ export async function processJob(
         snapshotIds.map((snapshotId) =>
           db
             .from("regulatory_snapshots")
-            .select("id,status,parser_version,effective_date_unknown,validation_results")
+            .select("id,status,source_family,parser_version,effective_date_unknown,validation_results")
             .eq("id", snapshotId)
             .maybeSingle(),
         ),
@@ -432,17 +432,53 @@ export async function processJob(
         const snapshot = snapshotResult.data as {
           id: string;
           status: string;
+          source_family?: string;
           parser_version?: string | null;
           effective_date_unknown?: boolean;
           validation_results?: Record<string, unknown> | null;
         };
         const validation = snapshot.validation_results ?? {};
+        const unresolvedCitationCount =
+          typeof validation.unresolved_citation_count === "number" &&
+          Number.isInteger(validation.unresolved_citation_count) &&
+          validation.unresolved_citation_count >= 0
+            ? validation.unresolved_citation_count
+            : undefined;
+        const warnings = Array.isArray(validation.warnings)
+          ? validation.warnings.map(String)
+          : [];
+        const unresolvedCitationWarning = warnings.some((warning) =>
+          /unresolved numbering|repeated paragraph\b.*retained as section-level evidence/i.test(
+            warning,
+          ),
+        );
+        // Parser 1.1 recorded every unresolved paragraph path as a warning;
+        // 1.2+ carries explicit count/boolean fields. Unknown versions fail closed.
+        const legacyParserHasPrecisionWarnings =
+          snapshot.parser_version?.startsWith("vexim-ecfr-xml/1.1.") === true;
+        const citationPathsResolved =
+          validation.citation_paths_resolved === false ||
+          (unresolvedCitationCount !== undefined &&
+            unresolvedCitationCount > 0) ||
+          unresolvedCitationWarning
+            ? false
+            : validation.citation_paths_resolved === true ||
+                unresolvedCitationCount === 0 ||
+                (snapshot.source_family === "ecfr" &&
+                  legacyParserHasPrecisionWarnings)
+              ? true
+              : snapshot.source_family === "ecfr"
+                ? false
+                : undefined;
         parserQuality.push({
           snapshot_id: snapshot.id,
           status: snapshot.status,
+          source_family: snapshot.source_family,
           parser_version: snapshot.parser_version,
           coverage_complete: validation.coverage_complete === true,
           citations_valid: validation.citations_valid === true,
+          unresolved_citation_count: unresolvedCitationCount,
+          citation_paths_resolved: citationPathsResolved,
           effective_date_unknown:
             snapshot.effective_date_unknown === true ||
             validation.effective_date_unknown === true,

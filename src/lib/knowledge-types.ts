@@ -113,7 +113,12 @@ export interface ParserValidation {
   extracted_character_count?: number;
   coverage_ratio?: number;
   coverage_complete: boolean;
+  /** Citation string/content checks only; does not mean paragraph precision was resolved. */
   citations_valid: boolean;
+  /** Number of eCFR chunks whose paragraph label could not be placed safely in the hierarchy. */
+  unresolved_citation_count?: number;
+  /** False when at least one paragraph-level citation remains unresolved. */
+  citation_paths_resolved?: boolean;
   warnings: string[];
   missing_sections: string[];
   regression_passed?: boolean;

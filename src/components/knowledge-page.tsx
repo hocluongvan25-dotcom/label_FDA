@@ -84,6 +84,30 @@ const labels: Record<string, string> = {
   completed: "Hoàn thành",
   dead_letter: "Cần xử lý",
 };
+const citationPrecisionLabels: Record<string, string> = {
+  paragraph: "paragraph-level · parser resolved",
+  section: "section-level only",
+  heading: "heading-level",
+  page: "PDF page-level",
+  unresolved: "UNRESOLVED · expert review required",
+};
+const safeRegulatoryAnchor = (anchor: string) => {
+  try {
+    const url = new URL(anchor);
+    return url.protocol === "https:" &&
+      [
+        "www.ecfr.gov",
+        "www.fda.gov",
+        "fda.gov",
+        "www.govinfo.gov",
+        "govinfo.gov",
+      ].includes(url.hostname)
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+};
 export function KnowledgePage() {
   const app = useApp();
   const requestedSnapshot = useSearchParams().get("snapshot");
@@ -337,6 +361,65 @@ export function KnowledgePage() {
   );
   const alerts = dashboard?.alerts.filter((a) => !a.resolved_at) ?? [];
   const snap = selected?.snapshot;
+  const validation = snap?.validation_results as
+    | Record<string, unknown>
+    | undefined;
+  const parserUnresolvedCount =
+    typeof validation?.unresolved_citation_count === "number" &&
+    Number.isSafeInteger(validation.unresolved_citation_count) &&
+    validation.unresolved_citation_count >= 0
+      ? validation.unresolved_citation_count
+      : null;
+  const pageUnresolvedCount =
+    selected?.chunks.filter((chunk) => chunk.citation_precision === "unresolved")
+      .length ?? 0;
+  const allSnapshotChunksLoaded =
+    !!selected &&
+    selected.offset === 0 &&
+    selected.total_count === selected.chunks.length;
+  const parserWarnings = Array.isArray(validation?.warnings)
+    ? validation.warnings.map(String)
+    : [];
+  const parserReportsUnresolved = parserWarnings.some((warning) =>
+    /unresolved numbering|repeated paragraph\b.*retained as section-level evidence/i.test(
+      warning,
+    ),
+  );
+  const explicitPathsResolved =
+    typeof validation?.citation_paths_resolved === "boolean"
+      ? validation.citation_paths_resolved
+      : undefined;
+  const unresolvedCitationFound =
+    explicitPathsResolved === false ||
+    parserReportsUnresolved ||
+    (parserUnresolvedCount !== null && parserUnresolvedCount > 0) ||
+    pageUnresolvedCount > 0;
+  const citationPrecisionStatus = unresolvedCitationFound
+    ? "unresolved"
+    : explicitPathsResolved === true ||
+        parserUnresolvedCount === 0 ||
+        allSnapshotChunksLoaded
+      ? "clear"
+      : "unverified";
+  const citationPrecisionSummary =
+    parserUnresolvedCount === 0 &&
+    (explicitPathsResolved === false ||
+      parserReportsUnresolved ||
+      pageUnresolvedCount > 0)
+      ? "Parser summary conflicts with unresolved chunk evidence; expert review is required."
+      : parserUnresolvedCount !== null
+        ? `${parserUnresolvedCount} unresolved chunk${parserUnresolvedCount === 1 ? "" : "s"} reported across parser output.`
+        : parserReportsUnresolved
+          ? "Parser warnings report unresolved numbering; exact count was not recorded."
+          : explicitPathsResolved === false
+            ? "Parser marks citation paths unresolved; exact count was not recorded."
+            : pageUnresolvedCount > 0
+              ? `${pageUnresolvedCount} unresolved chunk${pageUnresolvedCount === 1 ? "" : "s"} in the displayed page; full-snapshot count is unavailable.`
+              : allSnapshotChunksLoaded
+                ? "No unresolved citation chunks in the complete loaded snapshot. This is structural parser output, not expert approval."
+                : selected
+                  ? "No unresolved chunks in the displayed page; full-snapshot citation status is unverified."
+                  : "Citation precision has not been checked until snapshot detail is loaded.";
   const independent =
     !!snap &&
     snap.reviewed_by !== app.actor.id &&
@@ -1245,11 +1328,18 @@ export function KnowledgePage() {
                   </>
                 ) : (
                   <>
+                    {snap.status === "DRAFT" && (
+                      <InlineNotice tone="warning">
+                        Snapshot eCFR đang ở DRAFT. Parser coverage và kiểm tra
+                        cú pháp citation không phải expert approval; nguồn/chunks
+                        chưa được duyệt và không đủ điều kiện retrieval/RAG.
+                      </InlineNotice>
+                    )}
                 <div className="knowledge-validation">
                   <strong>Kiểm tra tự động</strong>
                   {[
                     ["Coverage", snap.validation_results.coverage_complete],
-                    ["Citations", snap.validation_results.citations_valid],
+                    ["Citation syntax", snap.validation_results.citations_valid],
                     [
                       "Deterministic regression",
                       snap.validation_results.regression_passed,
@@ -1259,6 +1349,22 @@ export function KnowledgePage() {
                       {String(l)} · {v === true ? "PASS" : "CHƯA ĐẠT"}
                     </Badge>
                   ))}
+                  <Badge
+                    tone={
+                      citationPrecisionStatus === "unresolved"
+                        ? "red"
+                        : citationPrecisionStatus === "clear"
+                          ? "green"
+                          : "amber"
+                    }
+                  >
+                    Paragraph paths ·{" "}
+                    {citationPrecisionStatus === "unresolved"
+                      ? "EXPERT REVIEW REQUIRED"
+                      : citationPrecisionStatus === "clear"
+                        ? "NO UNRESOLVED PATHS REPORTED"
+                        : "UNVERIFIED"}
+                  </Badge>
                   <p>
                     Sections:{" "}
                     {String(snap.validation_results.section_count ?? "—")} ·
@@ -1275,7 +1381,10 @@ export function KnowledgePage() {
                           .map(String)
                           .join(", ")
                       : "none"}
-                    . Regression kiểm tra code bằng fixtures, không xác nhận
+                    . Kiểm tra citation chỉ xác nhận cú pháp; điều đó không có
+                    nghĩa paragraph path đã được giải quyết. Trạng thái unresolved
+                    được báo riêng ở trên.
+                    Regression kiểm tra code bằng fixtures, không xác nhận
                     interpretation của phiên bản luật mới. Cần chuyên viên đối
                     chiếu riêng.
                   </p>
@@ -1330,33 +1439,174 @@ export function KnowledgePage() {
                       {snap.validation_results.warnings.map(String).join(" · ")}
                     </InlineNotice>
                   )}
+                {snap.source_family === "ecfr" && selected && (
+                  <div
+                    className={`knowledge-citation-review knowledge-citation-review-${citationPrecisionStatus}`}
+                  >
+                    <div className="knowledge-snapshot-heading">
+                      <strong>
+                        Paragraph-citation precision · structural check only
+                      </strong>
+                      <Badge
+                        tone={
+                          citationPrecisionStatus === "unresolved"
+                            ? "red"
+                            : citationPrecisionStatus === "clear"
+                              ? "green"
+                              : "amber"
+                        }
+                      >
+                        {citationPrecisionStatus === "unresolved"
+                          ? "UNRESOLVED · EXPERT REVIEW REQUIRED"
+                          : citationPrecisionStatus === "clear"
+                            ? "NO UNRESOLVED PATHS REPORTED"
+                            : "UNVERIFIED"}
+                      </Badge>
+                    </div>
+                    <p>{citationPrecisionSummary}</p>
+                    <p>
+                      “Unresolved” means the chunk has no verified paragraph
+                      path; its anchor may point only to the CFR section. Do not
+                      derive a subsection from the excerpt or marker text alone.
+                      A regulatory expert must compare the complete, dated raw
+                      eCFR XML. Keep unresolved chunks DRAFT and out of RAG / retrieval.
+                    </p>
+                  </div>
+                )}
                 <h3>
                   Chunks có nguồn gốc (
                   {selected?.total_count ?? snap.chunk_count})
                 </h3>
                 <div className="knowledge-chunks">
-                  {selected?.chunks.map((c) => (
-                    <article key={c.id}>
-                      <div className="knowledge-snapshot-heading">
-                        <strong>{c.citation}</strong>
-                        <Badge
-                          tone={
-                            c.review_status === "APPROVED" ? "green" : "amber"
-                          }
-                        >
-                          {c.review_status}
-                        </Badge>
-                        <Badge>{c.citation_precision}</Badge>
-                      </div>
-                      <p className="knowledge-excerpt">{c.content}</p>
-                      <small>
-                        Chunk SHA {c.chunk_content_hash?.slice(0, 18)}… ·{" "}
-                        {c.topic}
-                        <br />
-                        Anchor: <code style={{ overflowWrap: "anywhere" }}>{c.source_anchor}</code>
-                      </small>
-                    </article>
-                  ))}
+                  {selected?.chunks.map((c) => {
+                    const anchorUrl = safeRegulatoryAnchor(c.source_anchor);
+                    const additionalTopics =
+                      c.topics?.filter((topic) => topic !== c.topic) ?? [];
+                    const paragraphPath = c.paragraph_path?.length
+                      ? c.paragraph_path.map((part) => `(${part})`).join("")
+                      : c.paragraph_path === undefined
+                        ? "Not recorded"
+                        : c.citation_precision === "unresolved"
+                          ? "Unresolved"
+                          : "None · section-level chunk";
+                    return (
+                      <article key={c.id}>
+                        <div className="knowledge-snapshot-heading">
+                          <strong>{c.citation}</strong>
+                          <Badge
+                            tone={
+                              c.review_status === "APPROVED"
+                                ? "green"
+                                : c.review_status === "DRAFT"
+                                  ? "amber"
+                                  : "neutral"
+                            }
+                          >
+                            {c.review_status}
+                          </Badge>
+                          <Badge
+                            tone={
+                              c.citation_precision === "unresolved"
+                                ? "red"
+                                : "blue"
+                            }
+                          >
+                            Precision · {c.citation_precision}
+                          </Badge>
+                        </div>
+                        <p className="knowledge-excerpt">{c.content}</p>
+                        {c.citation_precision === "unresolved" && (
+                          <div className="knowledge-chunk-warning">
+                            <strong>Expert review required.</strong> No paragraph
+                            path has been verified; the citation is section-level
+                            only. Do not infer a subsection from this excerpt.
+                          </div>
+                        )}
+                        <dl className="knowledge-chunk-provenance">
+                          <div>
+                            <dt>Review status</dt>
+                            <dd>{c.review_status}</dd>
+                          </div>
+                          <div>
+                            <dt>Citation precision</dt>
+                            <dd>
+                              {citationPrecisionLabels[c.citation_precision] ??
+                                c.citation_precision}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Topic</dt>
+                            <dd>
+                              <code>{c.topic || "Not recorded"}</code>
+                              {additionalTopics.length ? (
+                                <span> · {additionalTopics.join(", ")}</span>
+                              ) : null}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Paragraph path</dt>
+                            <dd>{paragraphPath}</dd>
+                          </div>
+                          <div className="knowledge-chunk-provenance-wide">
+                            <dt>Chunk SHA-256</dt>
+                            <dd>
+                              <code>{c.chunk_content_hash || "Not recorded"}</code>
+                            </dd>
+                          </div>
+                          <div className="knowledge-chunk-provenance-wide">
+                            <dt>Source anchor</dt>
+                            <dd>
+                              {anchorUrl ? (
+                                <a
+                                  href={anchorUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {c.source_anchor}
+                                </a>
+                              ) : (
+                                <code>{c.source_anchor || "Not recorded"}</code>
+                              )}
+                            </dd>
+                          </div>
+                          {c.hierarchy?.length ? (
+                            <div className="knowledge-chunk-provenance-wide">
+                              <dt>Parsed hierarchy</dt>
+                              <dd>
+                                {c.hierarchy
+                                  .map((node) =>
+                                    [
+                                      node.type,
+                                      node.identifier,
+                                      node.heading,
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" "),
+                                  )
+                                  .join(" › ")}
+                              </dd>
+                            </div>
+                          ) : null}
+                          {c.chunk_key && (
+                            <div>
+                              <dt>Chunk key</dt>
+                              <dd>
+                                <code>{c.chunk_key}</code>
+                              </dd>
+                            </div>
+                          )}
+                          {typeof c.sequence === "number" && (
+                            <div>
+                              <dt>Sequence · XML tag</dt>
+                              <dd>
+                                {c.sequence} · {c.xml_tag ?? "Not recorded"}
+                              </dd>
+                            </div>
+                          )}
+                        </dl>
+                      </article>
+                    );
+                  })}
                 </div>
                 {selected && selected.total_count > 50 && (
                   <div className="knowledge-pagination">

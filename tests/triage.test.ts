@@ -264,6 +264,15 @@ describe("versioned risk-based triage", () => {
     ["inadequate parser coverage", (input: TriageInput) => {
       input.parser_quality![0].coverage_complete = false;
     }, "REGULATORY_PARSER_COVERAGE_INADEQUATE"],
+    ["unresolved paragraph path despite valid citation syntax", (input: TriageInput) => {
+      input.parser_quality![0].citations_valid = true;
+      input.parser_quality![0].citation_paths_resolved = false;
+      input.parser_quality![0].unresolved_citation_count = 4;
+    }, "UNRESOLVED_REGULATORY_CITATION"],
+    ["unverified eCFR citation precision", (input: TriageInput) => {
+      input.parser_quality![0].source_family = "ecfr";
+      input.parser_quality![0].citations_valid = true;
+    }, "UNRESOLVED_REGULATORY_CITATION"],
     ["unverified parser version", (input: TriageInput) => {
       input.parser_quality![0].parser_version = null;
     }, "REGULATORY_PARSER_VERSION_UNVERIFIED"],

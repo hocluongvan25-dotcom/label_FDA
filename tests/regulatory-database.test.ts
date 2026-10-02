@@ -14,7 +14,10 @@ import type { PGlite } from "@electric-sql/pglite";
 import { createDatabase, actor, call, ids } from "./helpers/database";
 import { runRuleRegression } from "../src/lib/regression";
 import { RULE_CATALOG, SOURCE_CATALOG } from "../src/lib/regulatory";
-import { parseEcfrXml } from "../src/lib/ecfr-parser";
+import {
+  ECFR_PARSER_VERSION,
+  parseEcfrXml,
+} from "../src/lib/ecfr-parser";
 import type {
   KnowledgeSnapshot,
   RegulatoryIngestionJob,
@@ -96,6 +99,7 @@ async function fetched(date = day, body?: Buffer) {
         citation: "21 CFR Part 101",
         title: "SYNTHETIC TEST ONLY",
         source_version: date,
+        parser_version: ECFR_PARSER_VERSION,
         issue_date: date,
         canonical_url: `https://www.ecfr.gov/on/${date}/title-21/chapter-I/subchapter-B/part-101`,
       },

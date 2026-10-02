@@ -5679,6 +5679,78 @@ svg {
   flex-basis: 100%;
   margin-top: 8px;
 }
+.knowledge-citation-review {
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.knowledge-citation-review-unresolved {
+  border-color: #f3d5d1;
+  background: #fff5f4;
+}
+.knowledge-citation-review-unverified {
+  border-color: #f0d9b1;
+  background: #fffaf0;
+}
+.knowledge-citation-review-clear {
+  border-color: #d8e7de;
+  background: #f2f7f4;
+}
+.knowledge-citation-review .knowledge-snapshot-heading {
+  align-items: center;
+}
+.knowledge-citation-review strong {
+  font-size: 11px;
+}
+.knowledge-citation-review p {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #5f5647;
+}
+.knowledge-chunk-warning {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #f3d5d1;
+  border-radius: 8px;
+  background: #fff5f4;
+  color: #8c3c36;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.knowledge-chunk-provenance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px 16px;
+  margin: 14px 0 0;
+}
+.knowledge-chunk-provenance > div {
+  min-width: 0;
+}
+.knowledge-chunk-provenance dt {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.knowledge-chunk-provenance dd {
+  margin: 3px 0 0;
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.knowledge-chunk-provenance code {
+  overflow-wrap: anywhere;
+}
+.knowledge-chunk-provenance a {
+  color: var(--teal);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+.knowledge-chunk-provenance-wide {
+  grid-column: 1/-1;
+}
 .knowledge-chunks {
   max-height: 360px;
   overflow-y: auto;
@@ -5743,6 +5815,9 @@ svg {
   }
 }
 @media (max-width: 600px) {
+  .knowledge-chunk-provenance {
+    grid-template-columns: 1fr;
+  }
   .knowledge-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

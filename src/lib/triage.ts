@@ -20,9 +20,12 @@ export const MINIMUM_OCR_CONFIDENCE = 0.7;
 export interface RegulatoryParserQuality {
   snapshot_id: string;
   status: string;
+  source_family?: string;
   parser_version?: string | null;
   coverage_complete?: boolean;
   citations_valid?: boolean;
+  unresolved_citation_count?: number;
+  citation_paths_resolved?: boolean;
   effective_date_unknown?: boolean;
 }
 
@@ -375,11 +378,19 @@ export function evaluateTriage(input: TriageInput): TriageDecision {
           { source_id: source.id, rule_key: rule.rule_key },
         );
       }
-      if (quality.citations_valid !== true) {
+      const hasUnresolvedCitation =
+        quality.citation_paths_resolved === false ||
+        (typeof quality.unresolved_citation_count === "number" &&
+          quality.unresolved_citation_count > 0) ||
+        (quality.source_family === "ecfr" &&
+          quality.citation_paths_resolved !== true);
+      if (quality.citations_valid !== true || hasUnresolvedCitation) {
         add(
           "BLOCKED_REGULATORY_SOURCE",
           "UNRESOLVED_REGULATORY_CITATION",
-          "Có citation chưa được parser xác minh.",
+          hasUnresolvedCitation
+            ? "Citation syntax may be valid, but one or more paragraph paths remain unresolved; expert review is required and automatic issuance is blocked."
+            : "Có citation chưa được parser xác minh.",
           { source_id: source.id, rule_key: rule.rule_key },
         );
       }

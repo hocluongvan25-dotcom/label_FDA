@@ -463,6 +463,9 @@ export async function processRegulatoryIngestion(
       section_count: parsed.sections.length,
       coverage_complete: parsed.validation.coverage_complete,
       coverage_ratio: parsed.validation.coverage_ratio ?? null,
+      unresolved_citation_count:
+        parsed.validation.unresolved_citation_count ?? 0,
+      citation_paths_resolved: parsed.validation.citation_paths_resolved ?? false,
       effective_date_unknown: snapshot.effective_date_unknown,
       snapshot_status: "DRAFT",
       active_rules_changed: false,

@@ -4,7 +4,7 @@ import type {
   ParsedSection,
   ParserValidation,
 } from "./knowledge-types";
-export const ECFR_PARSER_VERSION = "vexim-ecfr-xml/1.1.0";
+export const ECFR_PARSER_VERSION = "vexim-ecfr-xml/1.2.0";
 interface XmlNode {
   tag: string;
   attrs: Record<string, string>;
@@ -406,6 +406,9 @@ export function parseEcfrXml(
   const keys = chunks.map((c) => c.chunk_key);
   if (new Set(keys).size !== keys.length)
     throw new EcfrParseError("Duplicate chunk keys.");
+  const unresolvedCitationCount = chunks.filter(
+    (chunk) => chunk.citation_precision === "unresolved",
+  ).length;
   return {
     sections,
     chunks,
@@ -416,11 +419,15 @@ export function parseEcfrXml(
       paragraph_count: paragraphCount,
       chunk_count: chunks.length,
       coverage_complete: missing.length === 0,
+      // This validates citation string format, not paragraph-path resolution.
+      // Unresolved chunks remain stageable as DRAFT with their precision reported separately.
       citations_valid: chunks.every(
         (c) =>
           c.content.trim() &&
           /^21 CFR 101\.\d+(?:\([a-zA-Z0-9]+\))*$/.test(c.citation),
       ),
+      unresolved_citation_count: unresolvedCitationCount,
+      citation_paths_resolved: unresolvedCitationCount === 0,
       warnings,
       missing_sections: missing,
     },

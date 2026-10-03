@@ -209,11 +209,20 @@ export interface Finding {
   ai_confidence: number | null;
   reasoning_category:
     | "field_presence"
-    | "classification"
+    | "net_quantity"
+    | "nutrition"
+    | "nutrition_claim_exemption"
     | "allergen"
-    | "claim"
+    | "sesame"
+    | "disease_claim"
+    | "nutrient_claim"
+    | "certification_claim"
     | "consistency"
     | "readability"
+    | "language"
+    | "party"
+    | "classification"
+    | "claim"
     | "manual";
   human_review_required: boolean;
   reviewer_comment: string | null;

@@ -27,7 +27,11 @@ import type {
   Role,
 } from "@/lib/types";
 import { DEMO_ACTOR, PIPELINE_LABELS, MAX_FILES } from "@/lib/constants";
-import { createSeedData, sampleFields } from "@/lib/seed";
+import {
+  createSeedData,
+  refreshDraftOnlyDemoFixture,
+  sampleFields,
+} from "@/lib/seed";
 import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
 import { isSyntheticDemoReview } from "@/lib/demo-review";
 import { canAccessOrg, assertCan, assertOrg } from "@/lib/permissions";
@@ -62,6 +66,8 @@ import { assertTransition } from "@/lib/workflow";
 import { runRuleRegression, type RegressionResult } from "@/lib/regression";
 
 const STORAGE_KEY = "vexim-workspace-v3";
+const DEMO_FIXTURE_REVISION_KEY = "vexim-demo-fixture-revision";
+const DEMO_FIXTURE_REVISION = "tea-review-draft-15-v1";
 const empty: AppData = {
   organizations: [],
   members: [],
@@ -250,8 +256,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const loadDemo = useCallback(() => {
     modeRef.current = "demo";
     setMode("demo");
-    let d = createSeedData();
+    const seeded = createSeedData();
+    let d = seeded;
     let a = { ...DEMO_ACTOR };
+    let hasSavedDemoData = false;
+    let refreshFixture = false;
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
       if (
@@ -261,10 +270,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ) {
         d = saved.data;
         a = saved.actor ?? a;
+        hasSavedDemoData = true;
       }
+      refreshFixture =
+        localStorage.getItem(DEMO_FIXTURE_REVISION_KEY) !==
+        DEMO_FIXTURE_REVISION;
     } catch {
       /* An invalid local snapshot is replaced by an explicitly marked demo. */
     }
+    if (refreshFixture && hasSavedDemoData)
+      d = refreshDraftOnlyDemoFixture(d, seeded);
     // A browser job cannot survive closing the tab. Never pretend that it is still running.
     d.reviews = d.reviews.map((r) =>
       r.status === "PROCESSING" && !r.idempotency_key.startsWith("seed-")
@@ -281,6 +296,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     );
     replace(d);
     updateActor(a);
+    if (refreshFixture || !hasSavedDemoData) {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ version: 3, data: d, actor: a }),
+        );
+        localStorage.setItem(DEMO_FIXTURE_REVISION_KEY, DEMO_FIXTURE_REVISION);
+      } catch {
+        /* Retry the narrow fixture migration on the next demo load. */
+      }
+    }
     setAuthenticated(true);
     setError(null);
     setLoading(false);
@@ -1301,6 +1327,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const approveReport = async (reviewId: string, comment: string) => {
     const review = reviewFor(reviewId);
+    if (isSyntheticDemoReview(review))
+      throw new Error(
+        "Hồ sơ demo này chỉ dành cho rà soát độc lập; không thể ký duyệt hoặc tạo báo cáo.",
+      );
     if (modeRef.current === "supabase")
       return remoteAction<Report>(`/reviews/${reviewId}/reports`, {
         comment,

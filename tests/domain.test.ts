@@ -23,7 +23,7 @@ import { runRuleRegression } from "../src/lib/regression";
 import { DEMO_ACTOR } from "../src/lib/constants";
 import { can } from "../src/lib/permissions";
 import { assertTransition } from "../src/lib/workflow";
-import type { OcrResult } from "../src/lib/types";
+import type { AppData, OcrResult } from "../src/lib/types";
 function fixture() {
   const data = createSeedData();
   const review = data.reviews.find((r) => r.status === "HUMAN_REVIEW")!;
@@ -32,6 +32,43 @@ function fixture() {
     (l) => l.id === review.label_version_id,
   )!;
   return { data, review, product, label, fields: label.extracted_fields };
+}
+function prepareApprovedRegistry(data: AppData): AppData {
+  const contentHash = "d".repeat(64);
+  data.sources = data.sources.map((source) => ({
+    ...source,
+    status: "CURRENT",
+    content_hash: contentHash,
+    retrieved_at: new Date().toISOString(),
+    approved_by: DEMO_ACTOR.id,
+    approved_at: new Date().toISOString(),
+  }));
+  data.rules = data.rules.map((rule) => ({
+    ...rule,
+    status: "ACTIVE",
+    test_status: "passed",
+    approved_by: DEMO_ACTOR.id,
+    effective_from: "2026-01-01",
+    source_snapshot: rule.source_citations.map((id) => {
+      const source = data.sources.find((item) => item.id === id)!;
+      return {
+        id: source.id,
+        version: source.version,
+        content_hash: source.content_hash,
+      };
+    }),
+  }));
+  data.reviews = data.reviews.map((review) => ({
+    ...review,
+    rule_snapshot: review.rule_snapshot?.map((rule) => ({
+      ...rule,
+      source_versions: rule.source_versions.map((source) => ({
+        ...source,
+        content_hash: contentHash,
+      })),
+    })),
+  }));
+  return data;
 }
 const ocr: OcrResult = {
   model: "synthetic-ocr",
@@ -96,6 +133,7 @@ describe("Conservative domain checks and provenance", () => {
   });
   it("missing fields never count as satisfying identity, net weight or ingredients", () => {
     const f = fixture();
+    prepareApprovedRegistry(f.data);
     const result = evaluateRules({
       product: f.product,
       fields: f.fields.map((field) => ({ ...field, value: null })),
@@ -160,6 +198,7 @@ describe("Conservative domain checks and provenance", () => {
   );
   it("routes disease claims as expert-only signals without an automated violation finding", () => {
     const f = fixture();
+    prepareApprovedRegistry(f.data);
     const result = evaluateRules({
       product: { ...f.product, claims: ["Helps treat diabetes"] },
       fields: f.fields,
@@ -306,9 +345,24 @@ describe("Human approval and frozen reports", () => {
           }
         : x,
     );
-    expect(approvalIssues(f.data, f.review)).toEqual([]);
+    const draftBlockers = approvalIssues(f.data, f.review);
+    expect(draftBlockers).toContain(
+      "Bộ rules đã thay đổi hoặc hết hiệu lực. Hãy chạy lại rà soát trước khi duyệt.",
+    );
+    expect(
+      f.data.rules.every((rule) => rule.status === "DRAFT"),
+    ).toBe(true);
     expect(approvalIssues(f.data, f.review, true)).toContain(
       "File gốc phải hoàn thành malware scan trước khi phê duyệt báo cáo.",
+    );
+    f.data.rules = f.data.rules.map((rule) => ({
+      ...rule,
+      status: "ACTIVE",
+      test_status: "passed",
+      approved_by: DEMO_ACTOR.id,
+    }));
+    expect(approvalIssues(f.data, f.review)).toContain(
+      "Nguồn đã thay đổi, chưa duyệt hoặc hết hiệu lực từ lần review. Hãy rà soát lại.",
     );
     f.data.rules[0].status = "SUPERSEDED";
     expect(
@@ -317,23 +371,26 @@ describe("Human approval and frozen reports", () => {
   });
   it("freezes dossier/evidence and preserves disclaimer rather than legal approval", () => {
     const f = fixture();
-    f.data.findings = f.data.findings.map((x) =>
-      x.review_id === f.review.id
+    const signable = prepareApprovedRegistry(structuredClone(f.data));
+    const review = signable.reviews.find((r) => r.id === f.review.id)!;
+    signable.findings = signable.findings.map((finding) =>
+      finding.review_id === review.id
         ? {
-            ...x,
+            ...finding,
             status: "accepted",
+            citation_pending: false,
             reviewer_comment: "Synthetic reviewer decision only.",
             reviewed_by: DEMO_ACTOR.id,
           }
-        : x,
+        : finding,
     );
-    f.data.products.find((p) => p.id === f.product.id)!.name =
+    signable.products.find((product) => product.id === f.product.id)!.name =
       "Later mutable product name";
     const rationale = "Snapshot is a synthetic preliminary review.";
-    expect(reportDisposition(f.data, f.review)).toBe("NEEDS_CORRECTION");
+    expect(reportDisposition(signable, review)).toBe("NEEDS_CORRECTION");
     const report = buildReportSnapshot(
-      f.data,
-      f.review,
+      signable,
+      review,
       DEMO_ACTOR,
       rationale,
       true,
@@ -348,12 +405,13 @@ describe("Human approval and frozen reports", () => {
     expect(report.rationale).toBe(rationale);
     expect(report.result).toBe("NEEDS_CORRECTION");
     const oldName = report.product.name;
-    f.product.name = "Changed after report";
+    signable.products.find((product) => product.id === f.product.id)!.name =
+      "Changed after report";
     expect(report.product.name).toBe(oldName);
     expect(() =>
       buildReportSnapshot(
-        f.data,
-        f.review,
+        signable,
+        review,
         { ...DEMO_ACTOR, role: "customer_admin" },
         "Disallowed customer approval.",
         true,

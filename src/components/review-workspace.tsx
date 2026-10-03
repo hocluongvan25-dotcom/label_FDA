@@ -336,7 +336,10 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
         <div style={{ marginBottom: 16 }}>
           <InlineNotice icon={<Info size={15} />}>
             Hồ sơ demo tổng hợp, chỉ để chuyên gia rà soát độc lập. Artwork là
-            SVG tĩnh chưa quét; không chạy OCR, triage hoặc rules trên fixture.
+            SVG tĩnh chưa quét; không chạy OCR hoặc rules trên fixture.
+            {review.triage_evaluated_at
+              ? " Metadata triage đang hiển thị chỉ là fixture kiểm thử giao diện, không phải kết quả đã chạy."
+              : " Không có triage hoặc quyết định tuân thủ."}{" "}
             Cả 15 finding vẫn mở và các quy tắc/nguồn vẫn ở trạng thái DRAFT.
           </InlineNotice>
         </div>
@@ -897,6 +900,7 @@ function ReviewComparisonBoard({
   demo: boolean;
 }) {
   const app = useApp();
+  const draftOnlyDemo = isSyntheticDemoReview(review);
   const demoFixture =
     demo ||
     label.original_files.some(
@@ -922,7 +926,11 @@ function ReviewComparisonBoard({
       <div className="review-comparison-header">
         <div>
           <div className="tiny muted">SIDE-BY-SIDE EVIDENCE REVIEW</div>
-          <h2>Artwork ↔ OCR extraction ↔ 15-rule pack</h2>
+          <h2>
+            {draftOnlyDemo
+              ? "Artwork ↔ OCR chưa chạy ↔ DRAFT 15-rule pack"
+              : "Artwork ↔ OCR extraction ↔ 15-rule pack"}
+          </h2>
           <p>
             Đối chiếu cùng một phiên bản nhãn trước mọi quyết định reviewer.
           </p>
@@ -934,9 +942,11 @@ function ReviewComparisonBoard({
       {demoFixture && (
         <div className="review-comparison-demo-notice">
           <InlineNotice tone="warning" icon={<Info size={15} />}>
-            Artwork, OCR, source và rule states trong bản demo là dữ liệu tổng
-            hợp. Không xác minh sản phẩm hoặc nguồn pháp lý và không hàm ý phê
-            duyệt của Vexim/FDA.
+            {draftOnlyDemo
+              ? review.triage_evaluated_at
+                ? "Artwork là SVG mẫu tĩnh; không có OCR hoặc rules. Metadata triage đang hiển thị chỉ là fixture kiểm thử giao diện. Cả 15 finding là prompt rà soát tổng hợp, không phải kết luận pháp lý; Rule Pack và nguồn vẫn DRAFT."
+                : "Artwork là SVG mẫu tĩnh; không có OCR hoặc triage. Cả 15 finding là prompt rà soát tổng hợp, không phải kết luận pháp lý. Rule Pack và nguồn vẫn DRAFT, chưa có sign-off hoặc báo cáo."
+              : "Artwork, OCR, source và rule states trong bản demo là dữ liệu tổng hợp. Không xác minh sản phẩm hoặc nguồn pháp lý và không hàm ý phê duyệt của Vexim/FDA."}
           </InlineNotice>
         </div>
       )}
@@ -1011,7 +1021,7 @@ function ReviewComparisonBoard({
           <div className="review-comparison-panel-header">
             <div>
               <span>02 · EXTRACTED FIELDS</span>
-              <h3>OCR extraction</h3>
+              <h3>{draftOnlyDemo ? "OCR chưa chạy" : "OCR extraction"}</h3>
             </div>
             <Badge>{label.extracted_fields.length} trường</Badge>
           </div>
@@ -1069,8 +1079,12 @@ function ReviewComparisonBoard({
             })}
             {!label.extracted_fields.length && (
               <EmptyState
-                title="Chưa có extracted fields"
-                description="Chạy OCR/extraction trước khi đối chiếu."
+                title={draftOnlyDemo ? "Không có OCR output" : "Chưa có extracted fields"}
+                description={
+                  draftOnlyDemo
+                    ? "Fixture chỉ chứa artwork mẫu tĩnh; không chạy OCR và không suy đoán nội dung vắng mặt."
+                    : "Chạy OCR/extraction trước khi đối chiếu."
+                }
                 icon={<ScanLine size={24} />}
               />
             )}
@@ -1381,6 +1395,8 @@ function FindingDetail({
               <ProgressBar value={f.ai_confidence * 100} />{" "}
               <strong>{Math.round(f.ai_confidence * 100)}%</strong>
             </>
+          ) : isSyntheticDemoReview(review) ? (
+            "Prompt DRAFT · chưa có AI/OCR"
           ) : (
             "Finding do chuyên viên tạo"
           )}
@@ -2155,6 +2171,7 @@ function ExtractionModal({
   onClose: () => void;
 }) {
   const app = useApp();
+  const draftOnlyDemo = isSyntheticDemoReview(review);
   const [editing, setEditing] = useState<ExtractedField | null>(null);
   const [value, setValue] = useState("");
   const [reason, setReason] = useState("");
@@ -2264,8 +2281,12 @@ function ExtractionModal({
           })}
           {!label.extracted_fields.length && (
             <EmptyState
-              title="Chưa có extraction"
-              description="Chờ pipeline hoàn thành hoặc chạy lại từ OCR."
+              title={draftOnlyDemo ? "Không có OCR output" : "Chưa có extraction"}
+              description={
+                draftOnlyDemo
+                  ? "Fixture chỉ chứa artwork mẫu tĩnh. Không có OCR job hoặc kết quả cần xác minh."
+                  : "Chờ pipeline hoàn thành hoặc chạy lại từ OCR."
+              }
             />
           )}
         </div>

@@ -8,6 +8,7 @@ export function isSyntheticDemoReview(
 ): boolean {
   return (
     review.id === DEMO_REVIEW_ID &&
-    review.idempotency_key === DEMO_REVIEW_CASE_REFERENCE
+    (review.idempotency_key === DEMO_REVIEW_CASE_REFERENCE ||
+      review.idempotency_key === "seed-0")
   );
 }

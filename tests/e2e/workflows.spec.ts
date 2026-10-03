@@ -62,7 +62,7 @@ test("dashboard, guides, mobile navigation and readable overflow-free layout", a
   expect(errors).toEqual([]);
 });
 
-test("review comparison shows artwork, every tea rule, low-OCR alerts and unresolved paragraph-path warning", async ({
+test("review comparison shows 15 DRAFT prompts, no OCR, and expert-gated paragraph warnings", async ({
   page,
 }) => {
   await ready(page, firstReview);
@@ -71,14 +71,23 @@ test("review comparison shows artwork, every tea rule, low-OCR alerts and unreso
     page.getByRole("heading", { name: "Artwork / nhãn gốc", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "OCR extraction", exact: true }),
+    page.getByRole("heading", { name: "OCR chưa chạy", exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Rule Pack · 15/15", exact: true }),
   ).toBeVisible();
   await expect(page.getByTestId("review-rule-row")).toHaveCount(15);
-  await expect(page.getByTestId("ocr-low-confidence-field")).toHaveCount(1);
-  await expect(page.locator(".review-ocr-warning")).toContainText("dưới 70%");
+  await expect(
+    page.getByTestId("review-rule-row").filter({ hasText: "DEMO · DRAFT" }),
+  ).toHaveCount(15);
+  await expect(
+    page.getByTestId("review-rule-row").filter({ hasText: "Regression: pending" }),
+  ).toHaveCount(15);
+  await expect(page.getByTestId("ocr-low-confidence-field")).toHaveCount(0);
+  await expect(page.locator(".review-ocr-warning")).toHaveCount(0);
+  await expect(page.getByTestId("review-comparison-board")).toContainText(
+    "không có OCR hoặc triage",
+  );
 
   await page.evaluate((reviewId) => {
     const storageKey = "vexim-workspace-v3";
@@ -116,10 +125,8 @@ test("review comparison shows artwork, every tea rule, low-OCR alerts and unreso
 
   await page.getByRole("button", { name: "Extraction" }).click();
   const extraction = page.getByRole("dialog");
-  await expect(extraction).toContainText("OCR dưới 70% confidence");
-  await expect(
-    extraction.getByText("OCR <70% · 69%", { exact: true }),
-  ).toBeVisible();
+  await expect(extraction).toContainText("Không có OCR output");
+  await expect(extraction.locator(".field-list-item")).toHaveCount(0);
 });
 
 test("reviewer reasons, region selection, manual evidence, version comparison and requests", async ({
@@ -220,7 +227,7 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
   await expect(
     page.getByRole("heading", { name: "UI QA Green Tea", exact: true }),
   ).toBeVisible();
-  await ready(page, "/products/d0000000-0000-4000-8000-000000000001");
+  await ready(page, "/products/d0000000-0000-4000-8000-000000000005");
   await page.getByRole("button", { name: "Tải nhãn mới" }).click();
   const modal = page.getByRole("dialog");
   await expect(modal).toBeVisible();
@@ -235,7 +242,7 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
   await modal.getByRole("checkbox").check();
   await modal.getByRole("button", { name: "Tải lên và rà soát" }).click();
   await expect(modal).not.toBeVisible();
-  await expect(page.getByText(/v3/).first()).toBeVisible();
+  await expect(page.getByText(/v2/).first()).toBeVisible();
   await ready(page, firstReview);
   await expect(
     page.getByRole("button", { name: "Xác nhận", exact: true }),
@@ -248,73 +255,52 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
   ).toHaveCount(0);
 });
 
-test("human approval creates immutable report and downloads JSON with disclaimer", async ({
+test("the DRAFT-only tea review stays unsigned and has no generated artifacts", async ({
   page,
 }) => {
   await ready(page, firstReview);
-  const total = await page.locator(".finding-list-item.open").count();
-  for (let i = 0; i < total; i++) {
-    await page
-      .locator(".finding-list-item")
-      .filter({ hasText: "Chưa xử lý" })
-      .first()
-      .click();
-    await page
-      .getByLabel("Lý do / ghi chú chuyên viên")
-      .fill(
-        "Đã đối chiếu evidence gốc. Giữ finding và yêu cầu chỉnh sửa; không khẳng định nhãn đạt FDA.",
-      );
-    await page.getByRole("button", { name: "Xác nhận", exact: true }).click();
-    await expect(page.locator(".finding-list-item.open")).toHaveCount(
-      total - 1 - i,
-    );
-  }
-  await page.getByRole("button", { name: /duyệt báo cáo/i }).click();
-  const modal = page.getByRole("dialog");
-  await expect(modal).toBeVisible();
-  const rationale =
-    "Rà soát sơ bộ trong phạm vi trà khô. Cần sửa medical claim và bổ sung hồ sơ; không thay thế tư vấn pháp lý.";
-  const signoffPreview = modal.getByTestId("approval-signoff-preview");
-  await expect(signoffPreview).toContainText("approved_by");
-  await expect(signoffPreview).toContainText("demo-reviewer");
-  await expect(signoffPreview).toContainText("Cần chỉnh sửa");
-  await modal.getByLabel("Ghi chú phê duyệt").fill(rationale);
-  await expect(signoffPreview).toContainText(rationale);
-  await modal.getByRole("checkbox").check();
-  await modal.getByRole("button", { name: "Duyệt & tạo báo cáo" }).click();
-  await expect(page).toHaveURL(/\/reports\?report=/);
+  await expect(page.locator(".finding-list-item.open")).toHaveCount(15);
+  await expect(page.getByTestId("review-rule-row")).toHaveCount(15);
   await expect(
-    page.getByRole("heading", { name: "Báo cáo rà soát", exact: true }),
-  ).toBeVisible();
-  await page.screenshot({
-    path: "test-results/vexim-report.png",
-    fullPage: true,
-  });
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Tải JSON", exact: true }).click();
-  const download = await downloadPromise;
-  const file = await download.path();
-  if (!file) throw new Error("No download");
-  const report = JSON.parse(await readFile(file, "utf8"));
-  expect(report.disclaimer).toContain("FDA");
-  expect(report.schema_version).toBe("1.1");
-  expect(report.approved_by).toBe("demo-reviewer");
-  expect(report.disposition).toBe("NEEDS_CORRECTION");
-  expect(report.result).toBe(report.disposition);
-  expect(report.rationale).toBe(rationale);
-  expect(report.reviewer.id).toBe(report.approved_by);
-  expect(report.reviewer.comment).toBe(report.rationale);
-  await expect(page.getByText("approved_by", { exact: true })).toBeVisible();
-  await expect(page.getByText("Disposition", { exact: true })).toBeVisible();
-  await expect(page.getByText("Rationale", { exact: true })).toBeVisible();
-  const pdfDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Tải báo cáo PDF" }).click();
-  const pdfDownload = await pdfDownloadPromise;
-  const pdfPath = await pdfDownload.path();
-  expect((await readFile(pdfPath!)).subarray(0, 5).toString()).toBe("%PDF-");
-  expect(
-    report.findings.every((f: { status: string }) => f.status !== "open"),
-  ).toBe(true);
+    page.getByTestId("review-rule-row").filter({ hasText: "DEMO · DRAFT" }),
+  ).toHaveCount(15);
+  await expect(
+    page.getByRole("button", { name: "Phê duyệt báo cáo", exact: true }),
+  ).toHaveCount(0);
+
+  const fixture = await page.evaluate((reviewId) => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    const data = saved?.data;
+    const review = data?.reviews?.find(
+      (item: { id: string }) => item.id === reviewId,
+    );
+    return {
+      review,
+      findings: data?.findings?.filter(
+        (item: { review_id: string }) => item.review_id === reviewId,
+      ),
+      reports: data?.reports?.filter(
+        (item: { review_id: string }) => item.review_id === reviewId,
+      ).length,
+      preScreeningReports: data?.preScreeningReports?.filter(
+        (item: { review_id: string }) => item.review_id === reviewId,
+      ).length ?? 0,
+      rules: data?.rules?.map((item: { status: string }) => item.status),
+      sources: data?.sources?.map((item: { status: string }) => item.status),
+    };
+  }, "30000000-0000-4000-8000-000000000001");
+  expect(fixture.review.status).toBe("HUMAN_REVIEW");
+  expect(fixture.review.triage_evaluated_at).toBeNull();
+  expect(fixture.review.approved_by).toBeNull();
+  expect(fixture.review.rule_snapshot).toHaveLength(15);
+  expect(fixture.findings).toHaveLength(15);
+  expect(fixture.findings.every((finding: { status: string }) => finding.status === "open")).toBe(true);
+  expect(fixture.reports).toBe(0);
+  expect(fixture.preScreeningReports).toBe(0);
+  expect(fixture.rules.every((status: string) => status === "DRAFT")).toBe(true);
+  expect(fixture.sources.every((status: string) => status === "DRAFT")).toBe(true);
 });
 
 test("regulatory source changes require independent approval and preserve version history", async ({
@@ -337,6 +323,9 @@ test("regulatory source changes require independent approval and preserve versio
     .fill(
       "Nội dung fixture DEMO cho kiểm thử giao diện đăng ký và duyệt nguồn độc lập. Không phải trích đoạn luật thực, không sử dụng cho hồ sơ hoặc kết luận pháp lý production.",
     );
+  await editor
+    .getByLabel("Ngày truy xuất")
+    .fill(new Date().toISOString().slice(0, 10));
   await editor.getByRole("button", { name: "Lưu draft nguồn" }).click();
   await expect(editor).not.toBeVisible();
   const detail = page.getByRole("dialog");

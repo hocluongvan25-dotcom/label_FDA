@@ -1,5 +1,11 @@
 import { DISCLAIMER, DISCLAIMER_EN } from "./constants";
-import type { Actor, AppData, ReportSnapshot, Review } from "./types";
+import type {
+  Actor,
+  AppData,
+  ReportDisposition,
+  ReportSnapshot,
+  Review,
+} from "./types";
 import { assertCan, assertOrg } from "./permissions";
 import { now, sourceIsCurrent } from "./utils";
 
@@ -93,6 +99,22 @@ export function approvalIssues(
   }
   return [...new Set(issues)];
 }
+export function reportDisposition(
+  data: AppData,
+  review: Review,
+): ReportDisposition {
+  const findings = data.findings.filter((f) => f.review_id === review.id);
+  const accepted = findings.filter((f) => f.status === "accepted");
+  const missing =
+    (review.missing_information?.length ?? 0) > 0 ||
+    data.requests.some((r) => r.review_id === review.id && r.status === "open");
+  return accepted.some((f) => ["critical", "major"].includes(f.severity))
+    ? "NEEDS_CORRECTION"
+    : missing
+      ? "INSUFFICIENT_INFORMATION"
+      : "NO_ISSUE_DETECTED_IN_SCOPE";
+}
+
 export function buildReportSnapshot(
   data: AppData,
   review: Review,
@@ -115,10 +137,7 @@ export function buildReportSnapshot(
   if (!product || !label)
     throw new Error("Không tìm thấy hồ sơ hoặc phiên bản nhãn.");
   const findings = data.findings.filter((f) => f.review_id === review.id);
-  const accepted = findings.filter((f) => f.status === "accepted");
-  const missing =
-    (review.missing_information?.length ?? 0) > 0 ||
-    data.requests.some((r) => r.review_id === review.id && r.status === "open");
+  const disposition = reportDisposition(data, review);
   const citationIds = new Set([
     ...findings.flatMap((f) => f.citation_ids),
     ...(review.rule_snapshot ?? []).flatMap((r) =>
@@ -126,16 +145,15 @@ export function buildReportSnapshot(
     ),
   ]);
   return structuredClone({
-    schema_version: "1.0",
+    schema_version: "1.1",
     review_id: review.id,
     product,
     label_version: label,
     review_scope: review.review_scope,
-    result: accepted.some((f) => ["critical", "major"].includes(f.severity))
-      ? "NEEDS_CORRECTION"
-      : missing
-        ? "INSUFFICIENT_INFORMATION"
-        : "NO_ISSUE_DETECTED_IN_SCOPE",
+    disposition,
+    approved_by: actor.id,
+    rationale: comment.trim(),
+    result: disposition,
     disclaimer: `${DISCLAIMER}\n\n${DISCLAIMER_EN}`,
     findings,
     sources: data.sources.filter((s) => citationIds.has(s.id)),

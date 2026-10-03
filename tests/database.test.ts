@@ -198,7 +198,9 @@ describe("PostgreSQL migrations and tenant/RBAC boundaries", () => {
   });
   it("keeps pre-screening off by default and requires a staging-only system-admin allowlist", async () => {
     await actor(db, null, "service_role");
-    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(false);
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(
+      false,
+    );
 
     await actor(db, ids.admin);
     await call(db, "vexim_set_triage_pre_screening", [
@@ -207,8 +209,12 @@ describe("PostgreSQL migrations and tenant/RBAC boundaries", () => {
       [ids.orgA],
     ]);
     await actor(db, null, "service_role");
-    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(true);
-    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgB])).toBe(false);
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgA])).toBe(
+      true,
+    );
+    expect(await call(db, "vexim_pre_screening_allowed", [ids.orgB])).toBe(
+      false,
+    );
 
     await actor(db, ids.admin);
     await expect(
@@ -283,10 +289,16 @@ describe("PostgreSQL migrations and tenant/RBAC boundaries", () => {
       report_status: "PRE_SCREENING_ISSUED",
       expert_review_status: "NOT_REQUIRED",
     });
-    expect((await db.query("select * from public.pre_screening_reports")).rows).toHaveLength(1);
-    expect((await db.query("select * from public.reports")).rows).toHaveLength(0);
+    expect(
+      (await db.query("select * from public.pre_screening_reports")).rows,
+    ).toHaveLength(1);
+    expect((await db.query("select * from public.reports")).rows).toHaveLength(
+      0,
+    );
     await expect(
-      query("delete from public.pre_screening_reports where review_id=$1", [state.review.id]),
+      query("delete from public.pre_screening_reports where review_id=$1", [
+        state.review.id,
+      ]),
     ).rejects.toThrow(/append-only/);
   });
   it("ignores spoofed staff roles in auth user metadata", async () => {
@@ -830,14 +842,24 @@ describe("Registry QA, independent approvals, and final report gates", () => {
     expect(report.snapshot.demo).toBe(false);
     expect(report.snapshot.product.name).toBe("Green tea");
     expect(report.snapshot.disclaimer).toContain("not FDA approval");
-    expect(
-      (
-        await db.query<Record<string, unknown>>(
-          "select status from public.reviews where id=$1",
-          [state.review.id],
-        )
-      ).rows[0].status,
-    ).toBe("APPROVED_WITH_NOTES");
+    expect(report.snapshot.schema_version).toBe("1.1");
+    expect(report.snapshot.approved_by).toBe(ids.reviewer);
+    expect(report.snapshot.disposition).toBe(report.snapshot.result);
+    expect(report.snapshot.rationale).toBe(
+      "Reviewed evidence; preliminary review only.",
+    );
+    const persistedReview = (
+      await db.query<Record<string, unknown>>(
+        "select status,approved_by,approved_at,approval_comment from public.reviews where id=$1",
+        [state.review.id],
+      )
+    ).rows[0];
+    expect(persistedReview).toMatchObject({
+      status: "APPROVED_WITH_NOTES",
+      approved_by: ids.reviewer,
+      approval_comment: "Reviewed evidence; preliminary review only.",
+    });
+    expect(persistedReview.approved_at).toBeTruthy();
     expect(
       (
         await db.query<Record<string, unknown>>(

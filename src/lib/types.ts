@@ -45,6 +45,10 @@ export type TriageOverallResult =
   | "INSUFFICIENT_INFORMATION"
   | "BLOCKED"
   | "OUT_OF_SCOPE";
+export type ReportDisposition =
+  | "NEEDS_CORRECTION"
+  | "NO_ISSUE_DETECTED_IN_SCOPE"
+  | "INSUFFICIENT_INFORMATION";
 export type TriageReportStatus =
   | "NOT_ISSUED"
   | "BLOCKED"
@@ -52,10 +56,7 @@ export type TriageReportStatus =
   | "PRE_SCREENING_ISSUED"
   | "FINAL_REPORT_ISSUED";
 export type ExpertReviewStatus =
-  | "NOT_REQUIRED"
-  | "PENDING"
-  | "IN_PROGRESS"
-  | "EXPERT_REVIEWED";
+  "NOT_REQUIRED" | "PENDING" | "IN_PROGRESS" | "EXPERT_REVIEWED";
 export interface TriageReason {
   gate:
     | "OUT_OF_SCOPE"
@@ -366,15 +367,18 @@ export interface ReportSnapshot {
   missing_information?: string[];
   customer_requests?: CustomerRequest[];
   rule_snapshot?: Review["rule_snapshot"];
-  schema_version: "1.0";
+  schema_version: "1.0" | "1.1";
   review_id: string;
   product: Product;
   label_version: LabelVersion;
   review_scope: string;
-  result:
-    | "NEEDS_CORRECTION"
-    | "NO_ISSUE_DETECTED_IN_SCOPE"
-    | "INSUFFICIENT_INFORMATION";
+  /** Explicit immutable reviewer outcome; optional only for legacy v1.0 snapshots. */
+  disposition?: ReportDisposition;
+  /** Reviewer identity and rationale are mirrored here for audit-friendly exports. */
+  approved_by?: string;
+  rationale?: string;
+  /** Kept as a backwards-compatible alias for existing report consumers. */
+  result: ReportDisposition;
   disclaimer: string;
   findings: Finding[];
   sources: RegulatorySource[];

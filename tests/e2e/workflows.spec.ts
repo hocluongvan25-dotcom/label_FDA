@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 const firstReview = "/reviews/30000000-0000-4000-8000-000000000001";
 async function ready(page: Page, path = "/") {
   await page.goto(path);
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.locator(".app-shell")).toBeVisible({ timeout: 45_000 });
 }
 async function persona(page: Page, name: string) {
   await ready(page, "/settings");
@@ -62,6 +62,66 @@ test("dashboard, guides, mobile navigation and readable overflow-free layout", a
   expect(errors).toEqual([]);
 });
 
+test("review comparison shows artwork, every tea rule, low-OCR alerts and unresolved paragraph-path warning", async ({
+  page,
+}) => {
+  await ready(page, firstReview);
+  await expect(page.getByTestId("review-comparison-board")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Artwork / nhãn gốc", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "OCR extraction", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Rule Pack · 15/15", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByTestId("review-rule-row")).toHaveCount(15);
+  await expect(page.getByTestId("ocr-low-confidence-field")).toHaveCount(1);
+  await expect(page.locator(".review-ocr-warning")).toContainText("dưới 70%");
+
+  await page.evaluate((reviewId) => {
+    const storageKey = "vexim-workspace-v3";
+    const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+    const review = saved?.data?.reviews?.find(
+      (item: { id: string }) => item.id === reviewId,
+    );
+    if (!review) throw new Error("Synthetic review fixture was not loaded");
+    review.triage_route = "EXPERT_REVIEW_REQUIRED";
+    review.triage_evaluated_at = new Date().toISOString();
+    review.triage_policy_version = "synthetic-e2e-fixture";
+    review.report_status = "BLOCKED";
+    review.expert_review_status = "PENDING";
+    review.triage_reasons = [
+      {
+        gate: "BLOCKED_REGULATORY_SOURCE",
+        code: "UNRESOLVED_REGULATORY_CITATION",
+        message:
+          "Citation syntax may be valid, but one or more paragraph paths remain unresolved; expert review is required and automatic issuance is blocked.",
+        rule_key: "CLAIM-001",
+      },
+    ];
+    localStorage.setItem(storageKey, JSON.stringify(saved));
+  }, "30000000-0000-4000-8000-000000000001");
+  await page.reload();
+  const paragraphBadge = page.getByText(
+    "Paragraph paths · EXPERT REVIEW REQUIRED",
+    { exact: true },
+  );
+  await expect(paragraphBadge).toBeVisible();
+  await expect(paragraphBadge).toHaveClass(/badge-red/);
+  await expect(page.getByTestId("review-comparison-board")).toContainText(
+    "SYNTHETIC DEMO DATA",
+  );
+
+  await page.getByRole("button", { name: "Extraction" }).click();
+  const extraction = page.getByRole("dialog");
+  await expect(extraction).toContainText("OCR dưới 70% confidence");
+  await expect(
+    extraction.getByText("OCR <70% · 69%", { exact: true }),
+  ).toBeVisible();
+});
+
 test("reviewer reasons, region selection, manual evidence, version comparison and requests", async ({
   page,
 }) => {
@@ -79,6 +139,13 @@ test("reviewer reasons, region selection, manual evidence, version comparison an
   await expect(
     page.getByText("Đã xác nhận finding.", { exact: true }).last(),
   ).toBeVisible();
+  const recordedDisposition = page.getByTestId("finding-disposition");
+  await expect(recordedDisposition).toContainText("Disposition");
+  await expect(recordedDisposition).toContainText("Đã xác nhận");
+  await expect(recordedDisposition).toContainText("Linh Nguyễn");
+  await expect(recordedDisposition).toContainText(
+    "Đối chiếu bản gốc: cần chuyên gia xác nhận medical claim.",
+  );
   await page.getByRole("button", { name: "Chọn vùng evidence" }).click();
   await expect(page.locator(".label-image-wrap img")).toBeVisible();
   const image = await page.locator(".label-image-wrap").boundingBox();
@@ -205,11 +272,14 @@ test("human approval creates immutable report and downloads JSON with disclaimer
   await page.getByRole("button", { name: /duyệt báo cáo/i }).click();
   const modal = page.getByRole("dialog");
   await expect(modal).toBeVisible();
-  await modal
-    .getByLabel("Ghi chú phê duyệt")
-    .fill(
-      "Rà soát sơ bộ trong phạm vi trà khô. Cần sửa medical claim và bổ sung hồ sơ; không thay thế tư vấn pháp lý.",
-    );
+  const rationale =
+    "Rà soát sơ bộ trong phạm vi trà khô. Cần sửa medical claim và bổ sung hồ sơ; không thay thế tư vấn pháp lý.";
+  const signoffPreview = modal.getByTestId("approval-signoff-preview");
+  await expect(signoffPreview).toContainText("approved_by");
+  await expect(signoffPreview).toContainText("demo-reviewer");
+  await expect(signoffPreview).toContainText("Cần chỉnh sửa");
+  await modal.getByLabel("Ghi chú phê duyệt").fill(rationale);
+  await expect(signoffPreview).toContainText(rationale);
   await modal.getByRole("checkbox").check();
   await modal.getByRole("button", { name: "Duyệt & tạo báo cáo" }).click();
   await expect(page).toHaveURL(/\/reports\?report=/);
@@ -227,7 +297,16 @@ test("human approval creates immutable report and downloads JSON with disclaimer
   if (!file) throw new Error("No download");
   const report = JSON.parse(await readFile(file, "utf8"));
   expect(report.disclaimer).toContain("FDA");
-  expect(report.reviewer.id).toBeTruthy();
+  expect(report.schema_version).toBe("1.1");
+  expect(report.approved_by).toBe("demo-reviewer");
+  expect(report.disposition).toBe("NEEDS_CORRECTION");
+  expect(report.result).toBe(report.disposition);
+  expect(report.rationale).toBe(rationale);
+  expect(report.reviewer.id).toBe(report.approved_by);
+  expect(report.reviewer.comment).toBe(report.rationale);
+  await expect(page.getByText("approved_by", { exact: true })).toBeVisible();
+  await expect(page.getByText("Disposition", { exact: true })).toBeVisible();
+  await expect(page.getByText("Rationale", { exact: true })).toBeVisible();
   const pdfDownloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Tải báo cáo PDF" }).click();
   const pdfDownload = await pdfDownloadPromise;

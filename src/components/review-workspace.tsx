@@ -49,11 +49,16 @@ import {
 } from "./ui";
 import { LabelViewer } from "./label-viewer";
 import type {
+  Actor,
+  ComplianceRule,
   Evidence,
   ExtractedField,
   Finding,
   LabelVersion,
   PipelineStep,
+  Product,
+  RegulatorySource,
+  Report,
   Review,
   Severity,
 } from "@/lib/types";
@@ -62,6 +67,7 @@ import {
   EXPERT_REVIEW_STATUS_LABELS,
   FINDING_STATUS_LABELS,
   PIPELINE_LABELS,
+  RESULT_LABELS,
   SEVERITY_META,
   TRIAGE_REPORT_STATUS_LABELS,
   TRIAGE_RESULT_LABELS,
@@ -78,7 +84,7 @@ import {
   sourceIsCurrent,
   uid,
 } from "@/lib/utils";
-import { approvalIssues } from "@/lib/reports";
+import { approvalIssues, reportDisposition } from "@/lib/reports";
 import { PRE_SCREENING_DISCLAIMER } from "@/lib/triage";
 
 const fieldLabels: Record<string, string> = {
@@ -95,6 +101,22 @@ const fieldLabels: Record<string, string> = {
   use_instruction: "Hướng dẫn sử dụng",
   english_required_information: "Thông tin bằng tiếng Anh",
 };
+function lowConfidenceOcrFields(fields: ExtractedField[]) {
+  return fields.filter(
+    (field) =>
+      !!field.value?.trim() &&
+      !field.manually_verified &&
+      field.confidence < 0.7,
+  );
+}
+function hasUnresolvedParagraphPaths(review: Review) {
+  return (review.triage_reasons ?? []).some(
+    (reason) =>
+      reason.code === "UNRESOLVED_REGULATORY_CITATION" &&
+      /paragraph paths?/i.test(reason.message) &&
+      /unresolved/i.test(reason.message),
+  );
+}
 export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
   const app = useApp();
   const review = app.data.reviews.find((r) => r.id === reviewId);
@@ -155,6 +177,14 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
   const preScreeningReport = app.data.preScreeningReports
     ?.filter((report) => report.review_id === review.id)
     .sort((a, b) => b.version - a.version)[0];
+  const lowOcrFields = lowConfidenceOcrFields(label.extracted_fields);
+  const unresolvedParagraphPaths = hasUnresolvedParagraphPaths(review);
+  const reviewRules = app.data.rules
+    .filter((rule) => rule.scope.includes(product.category))
+    .sort((a, b) => a.rule_key.localeCompare(b.rule_key));
+  const finalReport = app.data.reports.find(
+    (report) => report.review_id === review.id,
+  );
   const counts = findingCounts(findings);
   const selected = findings.find((f) => f.id === selectedId);
   const filtered = findings.filter(
@@ -317,7 +347,9 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             }}
           >
             <div>
-              <div className="tiny muted">TRIAGE · {review.triage_policy_version}</div>
+              <div className="tiny muted">
+                TRIAGE · {review.triage_policy_version}
+              </div>
               <h3 style={{ margin: "5px 0 8px" }}>Phân luồng hồ sơ</h3>
               <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
                 <Badge tone={TRIAGE_ROUTE_META[review.triage_route].tone}>
@@ -328,20 +360,36 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                     {TRIAGE_RESULT_LABELS[review.overall_result]}
                   </Badge>
                 )}
+                {unresolvedParagraphPaths && (
+                  <Badge tone="red">
+                    Paragraph paths · EXPERT REVIEW REQUIRED
+                  </Badge>
+                )}
               </div>
             </div>
             <div className="tiny muted" style={{ textAlign: "right" }}>
               Rủi ro {review.triage_risk_score ?? 0}/100
               <br />
-              Chuyên gia: {review.expert_review_status
+              Chuyên gia:{" "}
+              {review.expert_review_status
                 ? EXPERT_REVIEW_STATUS_LABELS[review.expert_review_status]
                 : "Chưa ghi nhận"}
               <br />
-              Artifact: {review.report_status
+              Artifact:{" "}
+              {review.report_status
                 ? TRIAGE_REPORT_STATUS_LABELS[review.report_status]
                 : "Chưa ghi nhận"}
             </div>
           </div>
+          {unresolvedParagraphPaths && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone="warning" icon={<CircleAlert size={15} />}>
+                Một hoặc nhiều paragraph paths chưa được xác minh. Cần chuyên
+                gia đối chiếu đường dẫn trích dẫn; không dùng trạng thái này để
+                tự động phát hành.
+              </InlineNotice>
+            </div>
+          )}
           {review.triage_route === "AUTO_SCREENED" && (
             <div style={{ marginTop: 12 }}>
               <InlineNotice tone={preScreeningReport ? "info" : "warning"}>
@@ -365,8 +413,12 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           {preScreeningReport && (
             <div style={{ marginTop: 12 }}>
               <InlineNotice tone="info">
-                <strong>Artifact sàng lọc sơ bộ · v{preScreeningReport.version}</strong>
-                <div style={{ marginTop: 5 }}>{PRE_SCREENING_DISCLAIMER.vi}</div>
+                <strong>
+                  Artifact sàng lọc sơ bộ · v{preScreeningReport.version}
+                </strong>
+                <div style={{ marginTop: 5 }}>
+                  {PRE_SCREENING_DISCLAIMER.vi}
+                </div>
               </InlineNotice>
               <Button
                 variant="secondary"
@@ -384,6 +436,24 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           )}
         </Card>
       )}
+      {!processing && (
+        <ReviewSignoffSummary
+          review={review}
+          report={finalReport}
+          actor={app.actor}
+          staff={app.data.staff ?? []}
+          demo={app.mode === "demo"}
+        />
+      )}
+      <ReviewComparisonBoard
+        review={review}
+        product={product}
+        label={label}
+        rules={reviewRules}
+        findings={findings}
+        lowOcrFields={lowOcrFields}
+        demo={app.mode === "demo"}
+      />
       {!processing && (
         <div className="review-summary-strip">
           <div>
@@ -709,6 +779,395 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
     </div>
   );
 }
+function ReviewSignoffSummary({
+  review,
+  report,
+  actor,
+  staff,
+  demo,
+}: {
+  review: Review;
+  report?: Report;
+  actor: Actor;
+  staff: { id: string; name: string }[];
+  demo: boolean;
+}) {
+  const snapshot = report?.snapshot;
+  const approvedBy = review.approved_by ?? snapshot?.approved_by ?? null;
+  const reviewerName =
+    snapshot?.reviewer.name ??
+    staff.find((person) => person.id === approvedBy)?.name ??
+    (approvedBy === actor.id ? actor.name : approvedBy);
+  const disposition = snapshot?.disposition ?? snapshot?.result ?? null;
+  const rationale =
+    snapshot?.rationale ??
+    review.approval_comment ??
+    snapshot?.reviewer.comment ??
+    null;
+  const approvedAt =
+    review.approved_at ?? snapshot?.reviewer.approved_at ?? null;
+
+  return (
+    <section
+      className="card review-signoff-card"
+      data-testid="review-signoff-summary"
+      aria-label="Reviewer sign-off summary"
+    >
+      <div className="review-signoff-header">
+        <div>
+          <div className="tiny muted">REVIEWER SIGN-OFF · AUDIT SUMMARY</div>
+          <h2>Disposition, approver và lý do</h2>
+        </div>
+        <Badge tone={demo ? "amber" : approvedBy ? "green" : "amber"}>
+          {demo
+            ? approvedBy
+              ? "DEMO · sign-off fixture"
+              : "DEMO · chưa ký"
+            : approvedBy
+              ? "Đã ghi sign-off"
+              : "Chưa ký duyệt"}
+        </Badge>
+      </div>
+      <dl className="review-signoff-grid">
+        <dt>Reviewer</dt>
+        <dd>{reviewerName ?? "Chưa ghi nhận"}</dd>
+        <dt>approved_by</dt>
+        <dd>{approvedBy ?? "Chưa ghi nhận"}</dd>
+        <dt>Disposition</dt>
+        <dd>
+          {disposition ? (
+            <Badge
+              tone={disposition === "NEEDS_CORRECTION" ? "orange" : "neutral"}
+            >
+              {RESULT_LABELS[disposition]}
+            </Badge>
+          ) : (
+            "Chưa ghi nhận · chờ reviewer sign-off"
+          )}
+        </dd>
+        <dt>Rationale</dt>
+        <dd>
+          {rationale ?? "Chưa ghi nhận · bắt buộc trước khi tạo báo cáo."}
+        </dd>
+        <dt>Thời điểm</dt>
+        <dd>{approvedAt ? formatDate(approvedAt, true) : "Chưa ký duyệt"}</dd>
+      </dl>
+      {demo && (
+        <p className="review-signoff-demo-note">
+          Các trường trên là fixture tổng hợp trong chế độ demo; không phải
+          product approval, legal approval hoặc quyết định của FDA.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ReviewComparisonBoard({
+  review,
+  product,
+  label,
+  rules,
+  findings,
+  lowOcrFields,
+  demo,
+}: {
+  review: Review;
+  product: Product;
+  label: LabelVersion;
+  rules: ComplianceRule[];
+  findings: Finding[];
+  lowOcrFields: ExtractedField[];
+  demo: boolean;
+}) {
+  const app = useApp();
+  const demoFixture =
+    demo ||
+    label.original_files.some(
+      (file) =>
+        file.sha256 === "DEMO_FIXTURE" || file.scan_status === "dev_unscanned",
+    ) ||
+    label.extracted_fields.some((field) =>
+      field.extraction_model.startsWith("demo-fixture"),
+    );
+  const executedRules = new Map(
+    (review.rule_snapshot ?? []).map((snapshot) => [
+      snapshot.rule_key,
+      snapshot,
+    ]),
+  );
+
+  return (
+    <section
+      className="card review-comparison-card"
+      data-testid="review-comparison-board"
+      aria-label="Side-by-side artwork, OCR extraction, and rules comparison"
+    >
+      <div className="review-comparison-header">
+        <div>
+          <div className="tiny muted">SIDE-BY-SIDE EVIDENCE REVIEW</div>
+          <h2>Artwork ↔ OCR extraction ↔ 15-rule pack</h2>
+          <p>
+            Đối chiếu cùng một phiên bản nhãn trước mọi quyết định reviewer.
+          </p>
+        </div>
+        <Badge tone={demoFixture ? "amber" : "blue"}>
+          {demoFixture ? "SYNTHETIC DEMO DATA" : "REVIEW EVIDENCE"}
+        </Badge>
+      </div>
+      {demoFixture && (
+        <div className="review-comparison-demo-notice">
+          <InlineNotice tone="warning" icon={<Info size={15} />}>
+            Artwork, OCR, source và rule states trong bản demo là dữ liệu tổng
+            hợp. Không xác minh sản phẩm hoặc nguồn pháp lý và không hàm ý phê
+            duyệt của Vexim/FDA.
+          </InlineNotice>
+        </div>
+      )}
+      {lowOcrFields.length > 0 && (
+        <div className="review-ocr-warning" role="alert">
+          <CircleAlert size={18} />
+          <div>
+            <strong>
+              {lowOcrFields.length} trường OCR có confidence dưới 70% — cần đối
+              chiếu artwork gốc.
+            </strong>
+            <div className="review-ocr-warning-fields">
+              {lowOcrFields.map((field) => (
+                <Badge key={field.id} tone="red">
+                  {fieldLabels[field.field] ?? field.field} ·{" "}
+                  {Math.round(field.confidence * 100)}%
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="review-comparison-grid">
+        <section
+          className="review-comparison-panel"
+          aria-label="Artwork artwork"
+        >
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>01 · ORIGINAL ARTWORK</span>
+              <h3>Artwork / nhãn gốc</h3>
+            </div>
+            <Badge>{label.original_files.length} file</Badge>
+          </div>
+          <div className="review-comparison-panel-body review-artwork-grid">
+            {label.original_files.map((file) => (
+              <article className="review-artwork-item" key={file.id}>
+                <div className="review-artwork-preview">
+                  {file.preview_url ? (
+                    <img
+                      src={file.preview_url}
+                      alt={`Artwork fixture ${file.name}`}
+                    />
+                  ) : (
+                    <div className="review-artwork-unavailable">
+                      <FileText size={24} />
+                      Preview unavailable
+                    </div>
+                  )}
+                </div>
+                <strong>{file.name}</strong>
+                <small>
+                  {file.page_count} page · {file.scan_status}
+                  {demoFixture ? " · DEMO FIXTURE" : ""}
+                </small>
+              </article>
+            ))}
+            {!label.original_files.length && (
+              <EmptyState
+                title="Artwork chưa có"
+                description="Chưa có file gốc để đối chiếu."
+                icon={<FileText size={24} />}
+              />
+            )}
+          </div>
+        </section>
+
+        <section
+          className="review-comparison-panel"
+          aria-label="OCR extraction fields"
+        >
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>02 · EXTRACTED FIELDS</span>
+              <h3>OCR extraction</h3>
+            </div>
+            <Badge>{label.extracted_fields.length} trường</Badge>
+          </div>
+          <div className="review-comparison-panel-body review-ocr-list">
+            {label.extracted_fields.map((field) => {
+              const isLowConfidence = lowOcrFields.some(
+                (low) => low.id === field.id,
+              );
+              return (
+                <article
+                  key={field.id}
+                  className={clsx(
+                    "review-ocr-field",
+                    isLowConfidence && "review-ocr-field-low",
+                  )}
+                  data-testid={
+                    isLowConfidence ? "ocr-low-confidence-field" : undefined
+                  }
+                >
+                  <div className="review-ocr-field-heading">
+                    <div>
+                      <strong>{fieldLabels[field.field] ?? field.field}</strong>
+                      <small>{field.field}</small>
+                    </div>
+                    <Badge
+                      tone={
+                        isLowConfidence
+                          ? "red"
+                          : field.manually_verified
+                            ? "green"
+                            : "neutral"
+                      }
+                    >
+                      {field.manually_verified
+                        ? "Đã xác minh thủ công"
+                        : `${Math.round(field.confidence * 100)}% confidence`}
+                    </Badge>
+                  </div>
+                  <p className="review-ocr-field-value">
+                    {field.value ??
+                      "Không phát hiện · cần xác minh, không phải kết luận vắng mặt"}
+                  </p>
+                  <blockquote>{field.evidence.text}</blockquote>
+                  <small className="review-ocr-field-meta">
+                    Trang {field.evidence.page} · {field.extraction_model}
+                  </small>
+                  {isLowConfidence && (
+                    <p className="review-ocr-field-alert">
+                      OCR confidence &lt;70% · cần đọc lại trực tiếp trên
+                      artwork.
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+            {!label.extracted_fields.length && (
+              <EmptyState
+                title="Chưa có extracted fields"
+                description="Chạy OCR/extraction trước khi đối chiếu."
+                icon={<ScanLine size={24} />}
+              />
+            )}
+          </div>
+        </section>
+
+        <section
+          className="review-comparison-panel"
+          aria-label="15-rule tea rule pack"
+        >
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>03 · RULE REGISTRY & REVIEW SNAPSHOT</span>
+              <h3>Rule Pack · {rules.length}/15</h3>
+            </div>
+            <Badge tone={rules.length === 15 ? "neutral" : "amber"}>
+              {rules.length} / 15
+            </Badge>
+          </div>
+          <div className="review-comparison-panel-body review-rule-list">
+            {rules.length !== 15 && (
+              <InlineNotice tone="warning" icon={<CircleAlert size={14} />}>
+                Rule Pack dự kiến có 15 quy tắc trong scope {product.category};
+                hiện có {rules.length}. Không coi danh sách thiếu là đánh giá
+                hoàn tất.
+              </InlineNotice>
+            )}
+            {rules.map((rule) => {
+              const execution = executedRules.get(rule.rule_key);
+              const relatedFindings = findings.filter(
+                (finding) => finding.rule_key === rule.rule_key,
+              );
+              const sources = rule.source_citations
+                .map((id) =>
+                  app.data.sources.find((source) => source.id === id),
+                )
+                .filter((source): source is RegulatorySource => !!source);
+              return (
+                <article
+                  className="review-rule-row"
+                  key={rule.id}
+                  data-testid="review-rule-row"
+                >
+                  <div className="review-rule-row-title">
+                    <div>
+                      <strong>{rule.rule_key}</strong>
+                      <span>{rule.name}</span>
+                    </div>
+                    <Badge
+                      tone={
+                        demoFixture
+                          ? "amber"
+                          : rule.status === "ACTIVE"
+                            ? "green"
+                            : rule.status === "DRAFT"
+                              ? "neutral"
+                              : "red"
+                      }
+                    >
+                      {demoFixture ? `DEMO · ${rule.status}` : rule.status}
+                    </Badge>
+                  </div>
+                  <div className="review-rule-row-meta">
+                    <span>
+                      Review snapshot:{" "}
+                      {execution ? `v${execution.version}` : "not present"}
+                    </span>
+                    <span>Regression: {rule.test_status}</span>
+                    <span>
+                      Finding:{" "}
+                      {relatedFindings.length
+                        ? relatedFindings
+                            .map(
+                              (finding) =>
+                                FINDING_STATUS_LABELS[finding.status],
+                            )
+                            .join(", ")
+                        : "none recorded"}
+                    </span>
+                  </div>
+                  <div className="review-rule-sources">
+                    <span>Sources</span>
+                    {sources.length ? (
+                      sources.map((source) => (
+                        <span className="review-rule-source" key={source.id}>
+                          {source.citation} ·{" "}
+                          {demoFixture
+                            ? `DEMO · ${source.status}`
+                            : source.status}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="review-rule-source-missing">
+                        No registry citation
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            {!rules.length && (
+              <EmptyState
+                title="No rules in product scope"
+                description="Source/rule registry chưa có rule phù hợp cho nhóm sản phẩm."
+                icon={<ShieldCheck size={24} />}
+              />
+            )}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function FindingDetail({
   finding: f,
   review,
@@ -729,6 +1188,10 @@ function FindingDetail({
   const [citationOpen, setCitationOpen] = useState(false);
   const [citations, setCitations] = useState(f.citation_ids);
   const [citationReason, setCitationReason] = useState("");
+  const recordedReviewerName = f.reviewed_by
+    ? (app.data.staff?.find((person) => person.id === f.reviewed_by)?.name ??
+      (f.reviewed_by === app.actor.id ? app.actor.name : f.reviewed_by))
+    : null;
   const decide = async (status: Finding["status"]) => {
     setBusy(true);
     try {
@@ -908,16 +1371,40 @@ function FindingDetail({
             <Info size={11} />
           </span>
         </div>
-        {f.reviewer_comment && (
-          <div className="finding-detail-section">
-            <h4>QUYẾT ĐỊNH ĐÃ LƯU</h4>
-            <p className="finding-detail-text">{f.reviewer_comment}</p>
-            <div className="tiny muted" style={{ marginTop: 7, fontSize: 7 }}>
-              {FINDING_STATUS_LABELS[f.status]} ·{" "}
-              {f.reviewed_at ? formatDate(f.reviewed_at, true) : ""}
-            </div>
-          </div>
-        )}
+        <div
+          className="finding-detail-section finding-disposition-card"
+          data-testid="finding-disposition"
+        >
+          <h4>REVIEWER DISPOSITION · AUDIT RECORD</h4>
+          <dl>
+            <dt>Disposition</dt>
+            <dd>
+              <Badge
+                tone={
+                  f.status === "accepted"
+                    ? "green"
+                    : f.status === "dismissed"
+                      ? "neutral"
+                      : "amber"
+                }
+              >
+                {FINDING_STATUS_LABELS[f.status]}
+              </Badge>
+            </dd>
+            <dt>Reviewer</dt>
+            <dd>{recordedReviewerName ?? "Chưa ghi nhận"}</dd>
+            <dt>Rationale</dt>
+            <dd>
+              {f.reviewer_comment ?? "Bắt buộc trước khi chốt disposition."}
+            </dd>
+            <dt>Recorded</dt>
+            <dd>
+              {f.reviewed_at
+                ? formatDate(f.reviewed_at, true)
+                : "Chưa ghi nhận"}
+            </dd>
+          </dl>
+        </div>
       </div>
       {editable && (
         <div className="finding-actions">
@@ -1233,6 +1720,7 @@ function ApprovalModal({
   const issues = approvalIssues(app.data, review, app.mode === "supabase");
   const findings = app.data.findings.filter((f) => f.review_id === review.id);
   const openFindings = findings.filter((f) => f.status === "open").length;
+  const disposition = openFindings ? null : reportDisposition(app.data, review);
   const submit = async () => {
     setBusy(true);
     try {
@@ -1276,8 +1764,8 @@ function ApprovalModal({
           định
         </div>
         <div>
-          <Avatar name={app.actor.name} size="sm" /> Người duyệt:{" "}
-          {app.actor.name}
+          <Avatar name={app.actor.name} size="sm" /> approved_by:{" "}
+          <strong>{app.actor.id}</strong> · {app.actor.name}
         </div>
         <div>
           <FileText size={15} /> Nhãn v
@@ -1288,6 +1776,14 @@ function ApprovalModal({
           · US federal food labeling MVP
         </div>
       </div>
+      {app.mode === "demo" && (
+        <div style={{ marginBottom: 14 }}>
+          <InlineNotice tone="warning">
+            Demo only: this sign-off uses synthetic fixtures and is not product,
+            legal or FDA approval.
+          </InlineNotice>
+        </div>
+      )}
       {issues.length > 0 ? (
         <InlineNotice tone="warning">
           <strong>Chưa đủ điều kiện phát hành</strong>
@@ -1311,8 +1807,32 @@ function ApprovalModal({
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           placeholder="Ghi rõ phạm vi, căn cứ quyết định và những giới hạn còn lại…"
-          hint="Tối thiểu 10 ký tự. Ghi chú được lưu trong snapshot báo cáo bất biến."
+          hint="Tối thiểu 10 ký tự. Đây là rationale được lưu trên review và snapshot báo cáo bất biến."
         />
+      </div>
+      <div
+        className="approval-signoff-preview"
+        data-testid="approval-signoff-preview"
+      >
+        <div>
+          <span>approved_by</span>
+          <strong>{app.actor.id}</strong>
+          <small>{app.actor.name}</small>
+        </div>
+        <div>
+          <span>Disposition preview</span>
+          <strong>
+            {disposition
+              ? RESULT_LABELS[disposition]
+              : `Chờ quyết định · ${openFindings} finding chưa xử lý`}
+          </strong>
+        </div>
+        <div>
+          <span>Rationale</span>
+          <p>
+            {comment.trim() || "Nhập ghi chú phê duyệt để lưu lý do sign-off."}
+          </p>
+        </div>
       </div>
       <div style={{ marginTop: 20 }}>
         <Checkbox checked={confirmed} onChange={setConfirmed}>
@@ -1612,6 +2132,7 @@ function ExtractionModal({
   const [value, setValue] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const lowFields = lowConfidenceOcrFields(label.extracted_fields);
   const save = async () => {
     if (!editing) return;
     setBusy(true);
@@ -1661,34 +2182,59 @@ function ExtractionModal({
           </>
         }
       >
+        {lowFields.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <InlineNotice tone="warning" icon={<CircleAlert size={15} />}>
+              {lowFields.length} trường OCR dưới 70% confidence. Hãy đối chiếu
+              từng trường với artwork; confidence thấp không phải kết luận về
+              tuân thủ.
+            </InlineNotice>
+          </div>
+        )}
         <div className="field-list">
-          {label.extracted_fields.map((f) => (
-            <div key={f.id} className="field-list-item">
-              <div>
-                <strong>{fieldLabels[f.field] ?? f.field}</strong>
-                <p>{f.value ?? "Chưa phát hiện · không tự điền dữ liệu"}</p>
-                <small>
-                  {f.extraction_model} ·{" "}
-                  {f.manually_verified
-                    ? "Đã xác minh thủ công"
-                    : `${Math.round(f.confidence * 100)}% confidence`}{" "}
-                  · Trang {f.evidence.page}
-                </small>
+          {label.extracted_fields.map((f) => {
+            const isLowConfidence = lowFields.some(
+              (field) => field.id === f.id,
+            );
+            return (
+              <div
+                key={f.id}
+                className={clsx(
+                  "field-list-item",
+                  isLowConfidence && "field-list-item-low",
+                )}
+              >
+                <div>
+                  <strong>{fieldLabels[f.field] ?? f.field}</strong>
+                  {isLowConfidence && (
+                    <Badge tone="red">
+                      OCR &lt;70% · {Math.round(f.confidence * 100)}%
+                    </Badge>
+                  )}
+                  <p>{f.value ?? "Chưa phát hiện · không tự điền dữ liệu"}</p>
+                  <small>
+                    {f.extraction_model} ·{" "}
+                    {f.manually_verified
+                      ? "Đã xác minh thủ công"
+                      : `${Math.round(f.confidence * 100)}% confidence`}{" "}
+                    · Trang {f.evidence.page}
+                  </small>
+                </div>
+                {editable && (
+                  <IconButton
+                    label={`Sửa ${fieldLabels[f.field] ?? f.field}`}
+                    onClick={() => {
+                      setEditing(f);
+                      setValue(f.value ?? "");
+                      setReason("");
+                    }}
+                  >
+                    <Pencil size={15} />
+                  </IconButton>
+                )}
               </div>
-              {editable && (
-                <IconButton
-                  label={`Sửa ${fieldLabels[f.field] ?? f.field}`}
-                  onClick={() => {
-                    setEditing(f);
-                    setValue(f.value ?? "");
-                    setReason("");
-                  }}
-                >
-                  <Pencil size={15} />
-                </IconButton>
-              )}
-            </div>
-          ))}
+            );
+          })}
           {!label.extracted_fields.length && (
             <EmptyState
               title="Chưa có extraction"

@@ -110,7 +110,8 @@ export function ReviewsPage() {
     [
       "action",
       "Cần xử lý",
-      app.data.reviews.filter((r) => needsAction(r.status, r.triage_route)).length,
+      app.data.reviews.filter((r) => needsAction(r.status, r.triage_route))
+        .length,
     ],
     [
       "processing",
@@ -490,6 +491,9 @@ export function ReportsPage() {
 }
 function ReportPreview({ report }: { report: Report }) {
   const s = report.snapshot;
+  const disposition = s.disposition ?? s.result;
+  const approvedBy = s.approved_by ?? s.reviewer.id;
+  const rationale = s.rationale ?? s.reviewer.comment;
   return (
     <div className="report-preview">
       <div className="report-preview-header">
@@ -500,8 +504,9 @@ function ReportPreview({ report }: { report: Report }) {
             {formatDate(s.generated_at, true)}
           </p>
         </div>
-        <Badge tone="green">
-          <FileCheck2 size={13} /> Chuyên viên đã xác nhận
+        <Badge tone={s.demo ? "amber" : "green"}>
+          <FileCheck2 size={13} />
+          {s.demo ? "DEMO · sign-off fixture" : "Chuyên viên đã xác nhận"}
         </Badge>
       </div>
       {s.demo && (
@@ -513,10 +518,20 @@ function ReportPreview({ report }: { report: Report }) {
         </div>
       )}
       <div className="report-result-box">
-        <span>KẾT QUẢ TRONG PHẠM VI RÀ SOÁT</span>
-        <h3>{RESULT_LABELS[s.result]}</h3>
+        <span>DISPOSITION · KẾT QUẢ TRONG PHẠM VI RÀ SOÁT</span>
+        <h3>{RESULT_LABELS[disposition]}</h3>
       </div>
       <dl className="description-list">
+        <dt>Disposition</dt>
+        <dd>{disposition}</dd>
+        <dt>approved_by</dt>
+        <dd>{approvedBy}</dd>
+        <dt>Reviewer</dt>
+        <dd>
+          {s.reviewer.name} · {formatDate(s.reviewer.approved_at, true)}
+        </dd>
+        <dt>Rationale</dt>
+        <dd>{rationale}</dd>
         <dt>Review scope</dt>
         <dd>{s.review_scope}</dd>
         <dt>Phiên bản nhãn</dt>
@@ -524,12 +539,6 @@ function ReportPreview({ report }: { report: Report }) {
           v{s.label_version.version} · {s.label_version.original_files.length}{" "}
           file gốc
         </dd>
-        <dt>Chuyên viên</dt>
-        <dd>
-          {s.reviewer.name} · {formatDate(s.reviewer.approved_at, true)}
-        </dd>
-        <dt>Ghi chú xác nhận</dt>
-        <dd>{s.reviewer.comment}</dd>
       </dl>
       <h3 style={{ fontSize: 12, marginBottom: 14 }}>Findings & hành động</h3>
       {s.findings.length ? (

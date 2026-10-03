@@ -122,7 +122,8 @@ export async function generateReportPdf(
     muted,
   );
   gap(12);
-  const result = RESULT_LABELS[snapshot.result];
+  const disposition = snapshot.disposition ?? snapshot.result;
+  const result = RESULT_LABELS[disposition];
   ensure(60);
   page.drawRectangle({
     x: M,
@@ -132,12 +133,12 @@ export async function generateReportPdf(
     color: light,
   });
   y -= 1;
-  text("KẾT QUẢ TRONG PHẠM VI RÀ SOÁT", 8, true, muted, 12);
+  text("DISPOSITION · KẾT QUẢ TRONG PHẠM VI RÀ SOÁT", 8, true, muted, 12);
   text(
     result,
     11,
     true,
-    snapshot.result === "NEEDS_CORRECTION" ? rgb(0.68, 0.25, 0.16) : teal,
+    disposition === "NEEDS_CORRECTION" ? rgb(0.68, 0.25, 0.16) : teal,
     12,
   );
   gap(22);
@@ -274,8 +275,10 @@ export async function generateReportPdf(
   }
   section("06  Xác nhận của chuyên viên");
   text(`Người rà soát: ${snapshot.reviewer.name}`, 10, true);
+  text(`approved_by: ${snapshot.approved_by ?? snapshot.reviewer.id}`, 9);
+  text(`Disposition: ${disposition}`, 9);
   text(`Ngày duyệt: ${formatDate(snapshot.reviewer.approved_at, true)}`, 9);
-  text(`Ghi chú: ${snapshot.reviewer.comment}`, 9);
+  text(`Rationale: ${snapshot.rationale ?? snapshot.reviewer.comment}`, 9);
   text(
     "Phê duyệt này chỉ xác nhận nội dung báo cáo của Vexim; không phải phê duyệt sản phẩm hoặc nhãn bởi FDA.",
     8,

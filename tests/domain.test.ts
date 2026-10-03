@@ -14,7 +14,11 @@ import {
   parseNetQuantity,
   validateStructuredExtraction,
 } from "../src/lib/extraction";
-import { approvalIssues, buildReportSnapshot } from "../src/lib/reports";
+import {
+  approvalIssues,
+  buildReportSnapshot,
+  reportDisposition,
+} from "../src/lib/reports";
 import { runRuleRegression } from "../src/lib/regression";
 import { DEMO_ACTOR } from "../src/lib/constants";
 import { can } from "../src/lib/permissions";
@@ -163,9 +167,9 @@ describe("Conservative domain checks and provenance", () => {
       sources: f.data.sources,
       reviewId: f.review.id,
     });
-    expect(result.findings.some((finding) => finding.rule_key === "CLAIM-001")).toBe(
-      false,
-    );
+    expect(
+      result.findings.some((finding) => finding.rule_key === "CLAIM-001"),
+    ).toBe(false);
     expect(result.warnings).toContain(
       "Phát hiện dấu hiệu claim bệnh lý; chuyển chuyên gia phân loại. Hệ thống không tự tạo finding vi phạm pháp luật.",
     );
@@ -325,16 +329,23 @@ describe("Human approval and frozen reports", () => {
     );
     f.data.products.find((p) => p.id === f.product.id)!.name =
       "Later mutable product name";
+    const rationale = "Snapshot is a synthetic preliminary review.";
+    expect(reportDisposition(f.data, f.review)).toBe("NEEDS_CORRECTION");
     const report = buildReportSnapshot(
       f.data,
       f.review,
       DEMO_ACTOR,
-      "Snapshot is a synthetic preliminary review.",
+      rationale,
       true,
     );
     expect(report.product.name).toBe(f.product.name);
     expect(report.demo).toBe(true);
     expect(report.disclaimer).toContain("not FDA approval");
+    expect(report.schema_version).toBe("1.1");
+    expect(report.approved_by).toBe(DEMO_ACTOR.id);
+    expect(report.disposition).toBe("NEEDS_CORRECTION");
+    expect(report.result).toBe(report.disposition);
+    expect(report.rationale).toBe(rationale);
     expect(report.result).toBe("NEEDS_CORRECTION");
     const oldName = report.product.name;
     f.product.name = "Changed after report";

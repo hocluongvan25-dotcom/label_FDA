@@ -18,6 +18,8 @@ import type {
   RegulatorySource,
   Report,
   Review,
+  ReviewParticipant,
+  ReviewPartyDecisionEntry,
   AuditEntry,
 } from "@/lib/types";
 import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
@@ -205,6 +207,8 @@ export async function workspace(
     "label_files",
     "extracted_fields",
     "reviews",
+    "review_participants",
+    "review_party_decisions",
     "findings",
     "customer_requests",
     "reports",
@@ -313,6 +317,8 @@ export async function workspace(
       findings: values.findings as Finding[],
       requests: values.customer_requests as CustomerRequest[],
       reports: values.reports as Report[],
+      reviewParticipants: values.review_participants as ReviewParticipant[],
+      partyDecisions: values.review_party_decisions as ReviewPartyDecisionEntry[],
       preScreeningReports: values.pre_screening_reports as PreScreeningReport[],
       audit: values.audit_logs as AuditEntry[],
       sources,

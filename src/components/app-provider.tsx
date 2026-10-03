@@ -79,6 +79,8 @@ const empty: AppData = {
   rules: [],
   requests: [],
   reports: [],
+  reviewParticipants: [],
+  partyDecisions: [],
   audit: [],
 };
 interface Toast {

@@ -54,7 +54,18 @@ describe("in-memory DRAFT-only tea demo fixture", () => {
       report_status: "NOT_ISSUED",
       expert_review_status: "PENDING",
       triage_evaluated_at: null,
+      collaboration_status: "not_shared",
     });
+    expect(
+      data.reviewParticipants?.filter((party) => party.review_id === review.id),
+    ).toHaveLength(1);
+    expect(
+      data.reviewParticipants?.find((party) => party.review_id === review.id)
+        ?.party_role,
+    ).toBe("label_owner");
+    expect(
+      data.partyDecisions?.some((decision) => decision.review_id === review.id),
+    ).toBe(false);
     expect(review.triage_route).toBe("EXPERT_REVIEW_REQUIRED");
     expect(review.triage_reasons).toEqual([]);
     expect(review.rule_snapshot).toHaveLength(15);
@@ -195,6 +206,54 @@ describe("in-memory DRAFT-only tea demo fixture", () => {
     review.approved_at = new Date().toISOString();
     review.approval_comment = "Legacy synthetic sign-off";
     review.pipeline = seeded.reviews[1].pipeline;
+    const ownerParticipant = legacy.reviewParticipants!.find(
+      (party) => party.review_id === DEMO_REVIEW_ID,
+    )!;
+    const unrelatedParticipant = legacy.reviewParticipants!.find(
+      (party) => party.review_id !== DEMO_REVIEW_ID,
+    )!;
+    legacy.reviewParticipants!.push({
+      ...ownerParticipant,
+      id: "90000000-0000-4000-8000-000000000098",
+      organization_id: legacy.organizations[1].id,
+      organization_name_snapshot: legacy.organizations[1].name,
+      party_role: "commercial_importer",
+      status: "invited",
+      activated_by: null,
+      activated_at: null,
+    });
+    legacy.partyDecisions = [
+      {
+        id: "91000000-0000-4000-8000-000000000098",
+        review_id: DEMO_REVIEW_ID,
+        label_version_id: review.label_version_id,
+        participant_id: ownerParticipant.id,
+        party_role: "label_owner",
+        decision: "accepted",
+        comment: "Legacy synthetic sign-off",
+        proposed_changes: [],
+        label_bundle_sha256: "a".repeat(64),
+        actor_id: ownerParticipant.activated_by!,
+        actor_name_snapshot: "Demo Owner",
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: "91000000-0000-4000-8000-000000000099",
+        review_id: unrelatedParticipant.review_id,
+        label_version_id: legacy.reviews.find(
+          (item) => item.id === unrelatedParticipant.review_id,
+        )!.label_version_id,
+        participant_id: unrelatedParticipant.id,
+        party_role: "label_owner",
+        decision: "accepted",
+        comment: "Keep unrelated decision history",
+        proposed_changes: [],
+        label_bundle_sha256: "b".repeat(64),
+        actor_id: unrelatedParticipant.activated_by!,
+        actor_name_snapshot: "Demo Owner",
+        created_at: new Date().toISOString(),
+      },
+    ];
     legacy.rules = legacy.rules.map((rule) => ({
       ...rule,
       status: "ACTIVE",
@@ -271,6 +330,26 @@ describe("in-memory DRAFT-only tea demo fixture", () => {
     expect(
       refreshed.reviews.find((item) => item.id === otherReviewBefore.id),
     ).toEqual(otherReviewBefore);
+    expect(
+      refreshed.reviewParticipants?.filter(
+        (party) => party.review_id === DEMO_REVIEW_ID,
+      ),
+    ).toEqual(
+      seeded.reviewParticipants?.filter(
+        (party) => party.review_id === DEMO_REVIEW_ID,
+      ),
+    );
+    expect(
+      refreshed.reviewParticipants?.some(
+        (party) => party.id === "90000000-0000-4000-8000-000000000098",
+      ),
+    ).toBe(false);
+    expect(refreshed.partyDecisions).toEqual([
+      expect.objectContaining({
+        id: "91000000-0000-4000-8000-000000000099",
+        review_id: unrelatedParticipant.review_id,
+      }),
+    ]);
     expect(
       refreshed.findings.filter((item) => item.review_id !== DEMO_REVIEW_ID),
     ).toEqual(otherFindingsBefore);

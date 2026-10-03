@@ -41,6 +41,7 @@ export async function createDatabase() {
     "0005_fda_guidance_ingestion.sql",
     "0006_review_signoff_disposition.sql",
     "0007_demo_static_artwork.sql",
+    "0008_collaborative_review_parties.sql",
   ])
     await db.exec(await readFile(`supabase/migrations/${migration}`, "utf8"));
   const people = [

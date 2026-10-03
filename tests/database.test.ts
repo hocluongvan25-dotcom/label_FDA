@@ -1032,3 +1032,345 @@ describe("Assignment, account privacy and expired leases", () => {
     ).rejects.toThrow(/last customer admin/i);
   });
 });
+
+describe("Collaborative review parties and version-bound decisions", () => {
+  it("keeps an importer invitation private until accepted and the owner shares the review", async () => {
+    const { review, product, label } = await submit(db);
+    const unrelated = await call<{ id: string }>(
+      db,
+      "vexim_save_product",
+      [{ ...productDraft(ids.orgA), name: "Unrelated owner product" }],
+    );
+
+    await actor(db, ids.customerA);
+    const participant = await call<{
+      id: string;
+      status: string;
+      party_role: string;
+    }>(db, "vexim_invite_review_participant", [
+      review.id,
+      ids.orgB,
+      "commercial_importer",
+    ]);
+    expect(participant).toMatchObject({
+      status: "invited",
+      party_role: "commercial_importer",
+      organization_id: ids.orgB,
+    });
+
+    await actor(db, ids.customerB);
+    expect(await call(db, "app_can_access_review", [review.id])).toBe(false);
+    expect(
+      (
+        await query("select id from public.reviews where id=$1", [review.id])
+      ).rows,
+    ).toHaveLength(0);
+    expect(
+      (
+        await query(
+          "select id from public.review_participants where id=$1",
+          [participant.id],
+        )
+      ).rows,
+    ).toHaveLength(1);
+
+    await call(db, "vexim_accept_review_participant", [participant.id]);
+    expect(await call(db, "app_can_access_review", [review.id])).toBe(false);
+
+    await actor(db, null, "service_role");
+    await query("update public.reviews set status='HUMAN_REVIEW' where id=$1", [
+      review.id,
+    ]);
+    await query(
+      "update public.label_files set scan_status='clean' where label_version_id=$1 and kind='original'",
+      [label.id],
+    );
+
+    await actor(db, ids.customerA);
+    const ownerDecision = await call<{
+      decision: string;
+      label_bundle_sha256: string;
+    }>(db, "vexim_record_party_decision", [
+      review.id,
+      "label_owner",
+      "accepted",
+      "Doanh nghiệp đã rà soát bản nhãn này.",
+      [],
+    ]);
+    expect(ownerDecision.decision).toBe("accepted");
+    expect(ownerDecision.label_bundle_sha256).toMatch(/^[a-f0-9]{64}$/);
+    await call(db, "vexim_share_review_with_importer", [
+      review.id,
+      "Chia sẻ phiên bản đã được doanh nghiệp rà soát.",
+    ]);
+
+    await actor(db, ids.customerB);
+    expect(await call(db, "app_can_read_org", [ids.orgA])).toBe(false);
+    expect(await call(db, "app_can_access_review", [review.id])).toBe(true);
+    expect(
+      (
+        await query("select id from public.products where id=$1", [product.id])
+      ).rows,
+    ).toHaveLength(1);
+    expect(
+      (
+        await query("select id from public.products where id=$1", [unrelated.id])
+      ).rows,
+    ).toHaveLength(0);
+
+    await call(db, "vexim_record_party_decision", [
+      review.id,
+      "commercial_importer",
+      "accepted",
+      "Importer đồng ý với chính phiên bản này.",
+      [],
+    ]);
+    expect(
+      (
+        await query(
+          "select collaboration_status,approved_by from public.reviews where id=$1",
+          [review.id],
+        )
+      ).rows[0],
+    ).toMatchObject({ collaboration_status: "mutually_accepted", approved_by: null });
+    expect(
+      (
+        await query("select id from public.reports where review_id=$1", [
+          review.id,
+        ])
+      ).rows,
+    ).toHaveLength(0);
+
+    await actor(db, ids.customerA);
+    await call(db, "vexim_remove_review_participant", [
+      participant.id,
+      "Access ended after the collaboration cycle.",
+    ]);
+    await actor(db, ids.customerB);
+    expect(await call(db, "app_can_access_review", [review.id])).toBe(false);
+    expect(
+      (
+        await query("select id from public.reviews where id=$1", [review.id])
+      ).rows,
+    ).toHaveLength(0);
+  });
+
+  it("binds party acceptance to an immutable file hash and keeps decisions append-only", async () => {
+    const { review, label } = await submit(db);
+    await actor(db, ids.customerA);
+    await call(db, "vexim_invite_review_participant", [
+      review.id,
+      ids.orgB,
+      "commercial_importer",
+    ]);
+    const importer = (
+      await query(
+        "select id from public.review_participants where review_id=$1 and party_role='commercial_importer'",
+        [review.id],
+      )
+    ).rows[0];
+    await actor(db, ids.customerB);
+    await call(db, "vexim_accept_review_participant", [importer.id]);
+    await actor(db, null, "service_role");
+    await query("update public.reviews set status='HUMAN_REVIEW' where id=$1", [
+      review.id,
+    ]);
+    await query(
+      "update public.label_files set scan_status='clean' where label_version_id=$1 and kind='original'",
+      [label.id],
+    );
+    await actor(db, ids.customerA);
+    const decision = await call<{ label_bundle_sha256: string }>(
+      db,
+      "vexim_record_party_decision",
+      [
+        review.id,
+        "label_owner",
+        "accepted",
+        "Owner accepted the uploaded label version.",
+        [],
+      ],
+    );
+    await call(db, "vexim_share_review_with_importer", [
+      review.id,
+      "Share the exact owner-reviewed file bundle.",
+    ]);
+    await actor(db, null, "service_role");
+    await expect(
+      query("update public.label_files set sha256=$1 where label_version_id=$2", [
+        "b".repeat(64),
+        label.id,
+      ]),
+    ).rejects.toThrow(/immutable/i);
+    await actor(db, ids.customerB);
+    const importerDecision = await call<{ label_bundle_sha256: string }>(
+      db,
+      "vexim_record_party_decision",
+      [
+        review.id,
+        "commercial_importer",
+        "accepted",
+        "Importer accepted the current file bundle.",
+        [],
+      ],
+    );
+    expect(importerDecision.label_bundle_sha256).toBe(
+      decision.label_bundle_sha256,
+    );
+
+    await actor(db, null, "service_role");
+    await expect(
+      query("update public.review_party_decisions set comment='tampered' where review_id=$1", [
+        review.id,
+      ]),
+    ).rejects.toThrow(/append-only/i);
+    expect(decision.label_bundle_sha256).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("stores importer edit proposals without changing canonical art or accepting the label", async () => {
+    const { review, label } = await submit(db);
+    await actor(db, ids.customerA);
+    await call(db, "vexim_invite_review_participant", [
+      review.id,
+      ids.orgB,
+      "commercial_importer",
+    ]);
+    const importer = (
+      await query(
+        "select id from public.review_participants where review_id=$1 and party_role='commercial_importer'",
+        [review.id],
+      )
+    ).rows[0];
+    await actor(db, ids.customerB);
+    await call(db, "vexim_accept_review_participant", [importer.id]);
+    await actor(db, null, "service_role");
+    await query("update public.reviews set status='HUMAN_REVIEW' where id=$1", [
+      review.id,
+    ]);
+    await query(
+      "update public.label_files set scan_status='clean' where label_version_id=$1 and kind='original'",
+      [label.id],
+    );
+    const originalHash = (
+      await query(
+        "select sha256 from public.label_files where label_version_id=$1 and kind='original'",
+        [label.id],
+      )
+    ).rows[0].sha256;
+    await actor(db, ids.customerA);
+    await call(db, "vexim_record_party_decision", [
+      review.id,
+      "label_owner",
+      "accepted",
+      "Owner reviewed this exact label version.",
+      [],
+    ]);
+    await call(db, "vexim_share_review_with_importer", [
+      review.id,
+      "Share this owner-reviewed version with the importer.",
+    ]);
+
+    await actor(db, ids.customerB);
+    const proposal = await call<{
+      decision: string;
+      proposed_changes: { field: string; proposed_value: string }[];
+    }>(db, "vexim_record_party_decision", [
+      review.id,
+      "commercial_importer",
+      "proposed_edit",
+      "Please consider this annotated wording change.",
+      [
+        {
+          field: "ingredient_declaration",
+          current_value: "Green tea leaves",
+          proposed_value: "Green tea",
+          reason: "Use the shorter common wording on this market label.",
+        },
+      ],
+    ]);
+    expect(proposal).toMatchObject({
+      decision: "proposed_edit",
+      proposed_changes: [
+        { field: "ingredient_declaration", proposed_value: "Green tea" },
+      ],
+    });
+    expect(
+      (
+        await query(
+          "select collaboration_status from public.reviews where id=$1",
+          [review.id],
+        )
+      ).rows[0].collaboration_status,
+    ).toBe("changes_requested");
+    await actor(db, null, "service_role");
+    expect(
+      (
+        await query(
+          "select sha256 from public.label_files where label_version_id=$1 and kind='original'",
+          [label.id],
+        )
+      ).rows[0].sha256,
+    ).toBe(originalHash);
+    await actor(db, ids.customerB);
+    await expect(
+      call(db, "vexim_record_party_decision", [
+        review.id,
+        "commercial_importer",
+        "proposed_edit",
+        "Invalid field value should be rejected.",
+        [
+          {
+            field: 7,
+            proposed_value: "Green tea",
+            reason: "This malformed proposal should not be recorded.",
+          },
+        ],
+      ]),
+    ).rejects.toThrow(/invalid fields/i);
+    await expect(
+      call(db, "vexim_record_party_decision", [
+        review.id,
+        "commercial_importer",
+        "accepted",
+        "Cannot accept after requesting a change.",
+        [],
+      ]),
+    ).rejects.toThrow(/new label version/i);
+  });
+
+  it("keeps FSVP status separate and requires explicit importer attestation", async () => {
+    const { review } = await submit(db);
+    await actor(db, ids.customerA);
+    const participant = await call<{
+      id: string;
+      party_role: string;
+      status: string;
+    }>(db, "vexim_invite_review_participant", [
+      review.id,
+      ids.orgB,
+      "fsvp_importer",
+    ]);
+    expect(participant.party_role).toBe("fsvp_importer");
+
+    await actor(db, ids.customerB);
+    await expect(
+      call(db, "vexim_accept_review_participant", [participant.id]),
+    ).rejects.toThrow(/explicit fsvp/i);
+    const accepted = await call<{
+      status: string;
+      fsvp_attested_at: string | null;
+      fsvp_attestation_note: string | null;
+    }>(db, "vexim_accept_review_participant", [
+      participant.id,
+      true,
+      "Tổ chức này xác nhận tư cách FSVP importer cho hồ sơ.",
+    ]);
+    expect(accepted).toMatchObject({
+      status: "active",
+      fsvp_attestation_note:
+        "Tổ chức này xác nhận tư cách FSVP importer cho hồ sơ.",
+    });
+    expect(accepted.fsvp_attested_at).toBeTruthy();
+    expect(await call(db, "app_can_access_review", [review.id])).toBe(false);
+  });
+});

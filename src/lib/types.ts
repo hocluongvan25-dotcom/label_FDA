@@ -6,6 +6,20 @@ export type Role =
   | "system_admin";
 export type Severity = "critical" | "major" | "minor" | "information";
 export type FindingStatus = "open" | "accepted" | "dismissed";
+export type ReviewPartyRole =
+  | "label_owner"
+  | "commercial_importer"
+  | "fsvp_importer";
+export type ReviewParticipantStatus = "invited" | "active" | "removed";
+export type ReviewPartyDecisionType =
+  | "accepted"
+  | "changes_requested"
+  | "proposed_edit";
+export type ReviewCollaborationStatus =
+  | "not_shared"
+  | "awaiting_importer"
+  | "changes_requested"
+  | "mutually_accepted";
 export type ReviewStatus =
   | "DRAFT"
   | "INTAKE_PENDING"
@@ -244,6 +258,7 @@ export interface Review {
   label_version_id: string;
   review_scope: "us_federal_food_labeling_mvp";
   status: ReviewStatus;
+  collaboration_status?: ReviewCollaborationStatus;
   triage_route?: TriageRoute;
   overall_result?: TriageOverallResult;
   report_status?: TriageReportStatus;
@@ -360,6 +375,41 @@ export interface CustomerRequest {
   created_by: string;
   created_at: string;
 }
+export interface ReviewParticipant {
+  id: string;
+  review_id: string;
+  organization_id: string;
+  organization_name_snapshot: string;
+  party_role: ReviewPartyRole;
+  status: ReviewParticipantStatus;
+  invited_by: string;
+  invited_at: string;
+  activated_by: string | null;
+  activated_at: string | null;
+  fsvp_attested_by: string | null;
+  fsvp_attested_at: string | null;
+  fsvp_attestation_note: string | null;
+  created_at: string;
+}
+export interface ReviewPartyDecisionEntry {
+  id: string;
+  review_id: string;
+  label_version_id: string;
+  participant_id: string;
+  party_role: "label_owner" | "commercial_importer";
+  decision: ReviewPartyDecisionType;
+  comment: string;
+  proposed_changes: {
+    field: string;
+    current_value?: string;
+    proposed_value: string;
+    reason: string;
+  }[];
+  label_bundle_sha256: string;
+  actor_id: string;
+  actor_name_snapshot: string;
+  created_at: string;
+}
 export interface AuditEntry {
   id: string;
   organization_id: string | null;
@@ -425,6 +475,8 @@ export interface AppData {
   rules: ComplianceRule[];
   requests: CustomerRequest[];
   reports: Report[];
+  reviewParticipants?: ReviewParticipant[];
+  partyDecisions?: ReviewPartyDecisionEntry[];
   preScreeningReports?: PreScreeningReport[];
   audit: AuditEntry[];
 }

@@ -425,6 +425,7 @@ export function createSeedData(): AppData {
       label_version_id: version.id,
       review_scope: "us_federal_food_labeling_mvp",
       status: statuses,
+      collaboration_status: "not_shared",
       progress: statuses === "PROCESSING" ? 65 : 100,
       assigned_to: DEMO_ACTOR.id,
       created_at: date(Math.floor(i / 3), 3),
@@ -695,6 +696,25 @@ export function createSeedData(): AppData {
     sources,
     rules,
     reports,
+    reviewParticipants: reviews.map((review, i) => ({
+      id: id("9", i + 1),
+      review_id: review.id,
+      organization_id: review.organization_id,
+      organization_name_snapshot:
+        organizations.find((org) => org.id === review.organization_id)?.name ??
+        "Doanh nghiệp demo",
+      party_role: "label_owner" as const,
+      status: "active" as const,
+      invited_by: "demo-customer-admin",
+      invited_at: review.created_at,
+      activated_by: "demo-customer-admin",
+      activated_at: review.created_at,
+      fsvp_attested_by: null,
+      fsvp_attested_at: null,
+      fsvp_attestation_note: null,
+      created_at: review.created_at,
+    })),
+    partyDecisions: [],
     members: organizations.map((o, i) => ({
       id: id("6", i + 1),
       organization_id: o.id,
@@ -884,6 +904,17 @@ export function refreshDraftOnlyDemoFixture(
     products: replaceById(data.products, fixtureProduct),
     labelVersions: replaceById(data.labelVersions, fixtureLabel),
     reviews: replaceById(data.reviews, fixtureReview),
+    reviewParticipants: [
+      ...(data.reviewParticipants ?? []).filter(
+        (participant) => participant.review_id !== DEMO_REVIEW_ID,
+      ),
+      ...(seeded.reviewParticipants ?? []).filter(
+        (participant) => participant.review_id === DEMO_REVIEW_ID,
+      ),
+    ],
+    partyDecisions: (data.partyDecisions ?? []).filter(
+      (decision) => decision.review_id !== DEMO_REVIEW_ID,
+    ),
     findings: [
       ...fixtureFindings,
       ...data.findings.filter((finding) => finding.review_id !== DEMO_REVIEW_ID),

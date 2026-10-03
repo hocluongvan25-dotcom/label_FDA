@@ -33,6 +33,22 @@ import {
 import { ensureReportFiles, reportSignedUrl } from "./report-files";
 
 const uuid = z.string().uuid();
+const proposedChangeSchema = z
+  .object({
+    field: z.string().trim().min(1).max(200),
+    current_value: z.string().max(5000).optional(),
+    proposed_value: z.string().trim().min(1).max(5000),
+    reason: z.string().trim().min(5).max(2000),
+  })
+  .strict();
+const partyDecisionSchema = z
+  .object({
+    party_role: z.enum(["label_owner", "commercial_importer"]),
+    decision: z.enum(["accepted", "changes_requested", "proposed_edit"]),
+    comment: z.string().trim().min(5).max(10000),
+    proposed_changes: z.array(proposedChangeSchema).max(50).default([]),
+  })
+  .strict();
 const draftSchema = z.object({
   id: uuid.optional(),
   organization_id: uuid.optional(),
@@ -478,6 +494,85 @@ export async function apiHandler(request: Request, segments: string[]) {
         request_id: uuid.parse(segments[1]),
       });
       result = { saved: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "participants" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({
+          organization_id: uuid,
+          party_role: z.enum(["commercial_importer", "fsvp_importer"]),
+        })
+        .strict()
+        .parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_invite_review_participant", {
+        rid: uuid.parse(segments[1]),
+        participant_org: body.organization_id,
+        requested_role: body.party_role,
+      });
+    } else if (
+      method === "POST" &&
+      segments[0] === "review-participants" &&
+      segments[2] === "accept" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({
+          attests_fsvp: z.boolean().default(false),
+          attestation_note: z.string().trim().max(5000).optional(),
+        })
+        .strict()
+        .parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_accept_review_participant", {
+        participant_id: uuid.parse(segments[1]),
+        attests_fsvp: body.attests_fsvp,
+        attestation_note: body.attestation_note ?? null,
+      });
+    } else if (
+      method === "DELETE" &&
+      segments[0] === "review-participants" &&
+      segments.length === 2
+    ) {
+      const body = z
+        .object({ reason: z.string().trim().min(5).max(5000) })
+        .strict()
+        .parse(await readJson(request));
+      await rpc(ctx.db, "vexim_remove_review_participant", {
+        participant_id: uuid.parse(segments[1]),
+        reason: body.reason,
+      });
+      result = { removed: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "share" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({ comment: z.string().trim().min(5).max(5000) })
+        .strict()
+        .parse(await readJson(request));
+      await rpc(ctx.db, "vexim_share_review_with_importer", {
+        rid: uuid.parse(segments[1]),
+        share_comment: body.comment,
+      });
+      result = { shared: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "party-decisions" &&
+      segments.length === 3
+    ) {
+      const body = partyDecisionSchema.parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_record_party_decision", {
+        rid: uuid.parse(segments[1]),
+        requested_role: body.party_role,
+        requested_decision: body.decision,
+        decision_comment: body.comment,
+        proposed_changes: body.proposed_changes,
+      });
     } else if (
       method === "POST" &&
       segments[0] === "reviews" &&

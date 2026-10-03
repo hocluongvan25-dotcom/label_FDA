@@ -48,6 +48,7 @@
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
     "@types/utif": "^3.0.5",
+    "braces": "file:patches/braces",
     "eslint": "^9.36.0",
     "eslint-config-next": "^16.0.0",
     "prettier": "^3.9.9",

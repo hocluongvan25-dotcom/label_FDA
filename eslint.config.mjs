@@ -17,6 +17,7 @@ export default defineConfig([
     "public/ocr/**",
     "public/pdf/**",
     "next-env.d.ts",
+    "patches/braces/**",
     "playwright-report/**",
     "test-results/**",
   ]),

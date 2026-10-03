@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   demoArtworkPreviewUrl,
   isBundledDemoArtwork,
+  isMockScannableDemoArtwork,
 } from "../src/lib/demo-artwork";
 import type { LabelFile } from "../src/lib/types";
 
@@ -26,12 +27,53 @@ const back: LabelFile = {
   storage_path: "demo-static/lotus-back-v2.svg",
   sha256: "ae6821bb45d6bca1a3d241a9eab5947cba3b76d7b861c50da0199112f8f8fa02",
 };
+const seededFront: LabelFile = {
+  ...front,
+  id: "10000000-0000-4000-8000-000000000003",
+  name: "tea-front-v2.svg",
+  size: 248832,
+  storage_path: "demo/front",
+  sha256: "DEMO_FIXTURE",
+  preview_url: "/samples/jasmine-front.svg",
+};
+const seededBack: LabelFile = {
+  ...back,
+  id: "10000000-0000-4000-8000-000000000004",
+  name: "tea-back-v2.svg",
+  size: 189120,
+  storage_path: "demo/back",
+  sha256: "DEMO_FIXTURE",
+  preview_url: "/samples/lotus-back-v2.svg",
+};
 
 describe("bundled demo artwork allowlist", () => {
   it("maps only the exact front and back SVG manifest rows", () => {
     expect(demoArtworkPreviewUrl(front)).toBe("/samples/lotus-front-v2.svg");
     expect(demoArtworkPreviewUrl(back)).toBe("/samples/lotus-back-v2.svg");
     expect(isBundledDemoArtwork(front)).toBe(true);
+  });
+
+  it("allows Mock Scan only for bundled or fixed seeded demo originals", () => {
+    expect(isMockScannableDemoArtwork(front)).toBe(true);
+    expect(isMockScannableDemoArtwork(back)).toBe(true);
+    expect(isMockScannableDemoArtwork(seededFront)).toBe(true);
+    expect(isMockScannableDemoArtwork(seededBack)).toBe(true);
+
+    expect(
+      isMockScannableDemoArtwork({
+        ...seededFront,
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      }),
+    ).toBe(false);
+    expect(
+      isMockScannableDemoArtwork({
+        ...seededFront,
+        preview_url: "https://attacker.example/art.svg",
+      }),
+    ).toBe(false);
+    expect(
+      isMockScannableDemoArtwork({ ...seededFront, scan_status: "clean" }),
+    ).toBe(false);
   });
 
   it.each([

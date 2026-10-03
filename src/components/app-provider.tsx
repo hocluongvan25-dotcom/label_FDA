@@ -38,6 +38,13 @@ import {
 import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
 import { isSyntheticDemoReview } from "@/lib/demo-review";
 import { localLabelBundleSha256 } from "@/lib/collaboration";
+import {
+  DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+  createDemoMockScanRecord,
+  demoMockScannedFileIdsFor,
+  parseDemoMockScanSession,
+  type DemoMockScanRecord,
+} from "@/lib/demo-mock-scan";
 import { canAccessOrg, assertCan, assertOrg } from "@/lib/permissions";
 import {
   uid,
@@ -100,6 +107,7 @@ interface ContextValue {
   data: AppData;
   actor: Actor;
   mode: "demo" | "supabase";
+  demoMockScans: Record<string, DemoMockScanRecord>;
   loading: boolean;
   authenticated: boolean;
   error: string | null;
@@ -111,6 +119,7 @@ interface ContextValue {
   signOut: () => Promise<void>;
   setDemoRole: (role: Role, alternate?: boolean) => void;
   resetDemo: () => Promise<void>;
+  runDemoMockScan: (reviewId: string) => Promise<DemoMockScanRecord>;
   saveProduct: (product: Product) => Promise<Product>;
   uploadVersion: (productId: string, files: File[]) => Promise<LabelVersion>;
   submitReview: (labelId: string) => Promise<Review>;
@@ -197,6 +206,10 @@ export const useApp = () => {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [rawData, setData] = useState<AppData>(empty);
   const dataRef = useRef<AppData>(empty);
+  const [demoMockScans, setDemoMockScans] = useState<
+    Record<string, DemoMockScanRecord>
+  >({});
+  const demoMockScansRef = useRef<Record<string, DemoMockScanRecord>>({});
   const [actor, setActor] = useState<Actor>(DEMO_ACTOR);
   const actorRef = useRef<Actor>(DEMO_ACTOR);
   const [mode, setMode] = useState<"demo" | "supabase">(
@@ -228,6 +241,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dataRef.current = d;
     setData(d);
   }, []);
+  const replaceDemoMockScans = useCallback(
+    (scans: Record<string, DemoMockScanRecord>, persistSession = true) => {
+      demoMockScansRef.current = scans;
+      setDemoMockScans(scans);
+      if (persistSession && typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(
+            DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+            JSON.stringify(scans),
+          );
+        } catch {
+          // Session persistence is optional; the current tab can still test the flow.
+        }
+      }
+    },
+    [],
+  );
+  const clearDemoMockScans = useCallback(() => {
+    demoMockScansRef.current = {};
+    setDemoMockScans({});
+    if (typeof window !== "undefined") {
+      try {
+        window.sessionStorage.removeItem(DEMO_MOCK_SCAN_SESSION_STORAGE_KEY);
+      } catch {
+        // The mock state is also cleared from memory.
+      }
+    }
+  }, []);
+  const restoreDemoMockScans = useCallback(
+    (data: AppData) => {
+      let serialized: string | null = null;
+      try {
+        serialized = window.sessionStorage.getItem(
+          DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+        );
+      } catch {
+        // The mock scan remains available for this tab, even without sessionStorage.
+      }
+      replaceDemoMockScans(parseDemoMockScanSession(data, serialized));
+    },
+    [replaceDemoMockScans],
+  );
   const commit = useCallback(
     (fn: (draft: AppData) => void) => {
       const next = structuredClone(dataRef.current);
@@ -276,11 +331,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const loadRemote = useCallback(async () => {
     const result = await api<WorkspaceResponse>("/workspace");
+    clearDemoMockScans();
     replace(result.data);
     updateActor(result.actor);
     setAuthenticated(true);
     setError(null);
-  }, [replace, updateActor]);
+  }, [clearDemoMockScans, replace, updateActor]);
   const loadDemo = useCallback(() => {
     modeRef.current = "demo";
     setMode("demo");
@@ -324,6 +380,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     );
     replace(d);
     updateActor(a);
+    restoreDemoMockScans(d);
     if (refreshFixture || !hasSavedDemoData) {
       try {
         localStorage.setItem(
@@ -338,7 +395,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setAuthenticated(true);
     setError(null);
     setLoading(false);
-  }, [replace, updateActor]);
+  }, [replace, restoreDemoMockScans, updateActor]);
   useEffect(() => {
     if (!isSupabaseConfigured()) {
       if (isSupabaseRequested()) {
@@ -441,6 +498,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loadDemo();
   };
   const signOut = async () => {
+    clearDemoMockScans();
     if (isSupabaseConfigured()) {
       modeRef.current = "supabase";
       setMode("supabase");
@@ -508,6 +566,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (running.current.size)
       throw new Error("Hãy chờ tác vụ OCR kết thúc trước khi đặt lại dữ liệu.");
     await clearLocalFiles();
+    clearDemoMockScans();
     localStorage.removeItem(STORAGE_KEY);
     updateActor(DEMO_ACTOR);
     const d = createSeedData();
@@ -1393,6 +1452,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     )
       throw new Error("Thao tác này cần quản trị viên của tổ chức liên quan.");
   };
+  const runDemoMockScan = async (reviewId: string) => {
+    if (modeRef.current !== "demo")
+      throw new Error("Mock Scan chỉ khả dụng trong Demo cục bộ.");
+    const review = collaborationReviewFor(reviewId);
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const record = createDemoMockScanRecord(review, label, now());
+    replaceDemoMockScans({
+      ...demoMockScansRef.current,
+      [label.id]: record,
+    });
+    return record;
+  };
   const inviteReviewParticipant = async (
     reviewId: string,
     organizationContactEmail: string,
@@ -1611,7 +1685,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       (version) => version.id === review.label_version_id,
     );
     if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
-    const bundleHash = await localLabelBundleSha256(label);
+    const bundleHash = await localLabelBundleSha256(label, {
+      demoMockScannedFileIds: demoMockScannedFileIdsFor(
+        review,
+        label,
+        demoMockScansRef.current,
+      ),
+    });
     const owner = (dataRef.current.reviewParticipants ?? []).find(
       (participant) =>
         participant.review_id === reviewId &&
@@ -1730,7 +1810,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       (version) => version.id === review.label_version_id,
     );
     if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
-    const bundleHash = await localLabelBundleSha256(label);
+    const bundleHash = await localLabelBundleSha256(label, {
+      demoMockScannedFileIds: demoMockScannedFileIdsFor(
+        review,
+        label,
+        demoMockScansRef.current,
+      ),
+    });
     if (partyRole === "commercial_importer" && decisionType === "accepted") {
       const owner = (dataRef.current.reviewParticipants ?? []).find(
         (entry) =>
@@ -2340,6 +2426,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         data: visible,
         actor,
         mode,
+        demoMockScans,
         loading,
         authenticated,
         error,
@@ -2351,6 +2438,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         signOut,
         setDemoRole,
         resetDemo,
+        runDemoMockScan,
         saveProduct,
         uploadVersion,
         submitReview,

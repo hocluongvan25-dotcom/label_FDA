@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   BadgeCheck,
@@ -32,6 +33,7 @@ import type {
   ReviewPartyDecisionType,
 } from "@/lib/types";
 import { formatDate } from "@/lib/utils";
+import { demoMockScannedFileIdsFor, eligibleDemoMockScanFiles } from "@/lib/demo-mock-scan";
 
 const roleLabel = {
   label_owner: "Chủ sở hữu nhãn",
@@ -293,6 +295,7 @@ export function ReviewCollaborationPanel({
   const [ownerOpen, setOwnerOpen] = useState(false);
   const [ownerComment, setOwnerComment] = useState("");
   const [ownerBusy, setOwnerBusy] = useState(false);
+  const [demoScanBusy, setDemoScanBusy] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
   const [shareComment, setShareComment] = useState("");
   const [shareBusy, setShareBusy] = useState(false);
@@ -337,7 +340,24 @@ export function ReviewCollaborationPanel({
     (version) => version.id === review.label_version_id,
   );
   const originals = label?.original_files.filter((file) => file.kind === "original") ?? [];
-  const originalsClean = originals.length > 0 && originals.every((file) => file.scan_status === "clean");
+  const mockableOriginals = label
+    ? eligibleDemoMockScanFiles(review, label)
+    : null;
+  const mockScannedIds = label
+    ? demoMockScannedFileIdsFor(review, label, app.demoMockScans)
+    : new Set<string>();
+  const mockScanComplete =
+    !!mockableOriginals && mockScannedIds.size === mockableOriginals.length;
+  const mockScanRecord =
+    label && mockScanComplete ? app.demoMockScans[label.id] : undefined;
+  const originalsReady =
+    originals.length > 0 &&
+    originals.every(
+      (file) =>
+        file.scan_status === "clean" ||
+        (app.mode === "demo" && mockScannedIds.has(file.id)),
+    );
+  const mockScanAvailable = app.mode === "demo" && !!mockableOriginals;
   const ownerMember = !!myOwnerParticipant && app.actor.organization_id === review.organization_id;
   const ownerAdmin = ownerMember && app.actor.role === "customer_admin";
   const canManageParticipants = ownerAdmin || app.actor.role === "system_admin";
@@ -367,16 +387,34 @@ export function ReviewCollaborationPanel({
     collaborationStatus === "not_shared" &&
     ownerAccepted &&
     commercialActive &&
-    originalsClean &&
+    originalsReady &&
     ["AI_REVIEW_READY", "HUMAN_REVIEW", "REVISION_REQUIRED"].includes(review.status);
   const canRespondAsImporter =
     !!myCommercialParticipant &&
     ["awaiting_importer", "changes_requested"].includes(collaborationStatus) &&
-    originalsClean;
+    originalsReady;
   const canAcceptAsImporter =
     canRespondAsImporter &&
     app.actor.role === "customer_admin" &&
     collaborationStatus === "awaiting_importer";
+
+  const runDemoScan = async () => {
+    setDemoScanBusy(true);
+    try {
+      await app.runDemoMockScan(review.id);
+      app.notify(
+        "Mock Scan demo hoàn tất. File vẫn mang scan_status dev_unscanned; đây không phải kết quả antivirus thật.",
+        "info",
+      );
+    } catch (error) {
+      app.notify(
+        error instanceof Error ? error.message : "Không thể chạy Mock Scan demo.",
+        "error",
+      );
+    } finally {
+      setDemoScanBusy(false);
+    }
+  };
 
   const submitInvite = async () => {
     setInviteBusy(true);
@@ -507,9 +545,69 @@ export function ReviewCollaborationPanel({
           Chủ nhãn xem xét trước; importer chỉ phản hồi sau khi chia sẻ. Mỗi quyết định gắn với đúng phiên bản và SHA-256 của file gốc. Đề xuất không sửa artwork. Quy trình này độc lập với báo cáo chuyên môn Vexim và không phải phê duyệt của FDA.
         </span>
       </div>
-      {!originalsClean && (
+      {mockScanAvailable && (
+        <>
+          <div className="demo-collaboration-guide">
+            <div className="demo-collaboration-guide-heading">
+              <Badge tone="amber">DEMO ONLY</Badge>
+              <strong>Thử luồng Chủ nhãn → Importer</strong>
+            </div>
+            <p className="tiny muted">
+              Chạy Mock Scan, rồi vào Cài đặt chọn Hoàng Nam · Mộc Trà Việt để mời <code>contact@annhientea.example</code> và xác nhận; đổi sang Minh Anh · An Nhiên Tea để nhận lời mời; quay lại chủ nhãn để chia sẻ, sau đó importer xác nhận đúng phiên bản.
+            </p>
+            <Link href="/settings" className="demo-collaboration-settings-link">
+              Mở Cài đặt để chọn persona demo
+            </Link>
+          </div>
+          <div className="demo-mock-scan-card" data-testid="demo-mock-scan">
+            <div className="demo-mock-scan-heading">
+              <div>
+                <h3>Mock Scan · artwork mẫu</h3>
+                <span className="tiny muted">
+                  {mockableOriginals?.length ?? 0} file gốc fixture · chỉ áp dụng trong Demo cục bộ
+                </span>
+              </div>
+              <Badge tone="amber">
+                {mockScanComplete ? "MÔ PHỎNG ĐÃ CHẠY" : "CHƯA MÔ PHỎNG"}
+              </Badge>
+            </div>
+            <InlineNotice tone="warning" icon={<ShieldCheck size={15} />}>
+              <strong>Không phải quét antivirus.</strong> Mock Scan chỉ mô phỏng kết quả cho artwork fixture tĩnh để thử luồng cộng tác. Không gọi ClamAV, không thay đổi <code>scan_status: dev_unscanned</code>, không quét file tải lên và không gửi dữ liệu lên Supabase. Không có giá trị cho môi trường thật hoặc báo cáo Vexim.
+            </InlineNotice>
+            <div className="demo-mock-scan-files">
+              {mockableOriginals?.map((file) => (
+                <div className="demo-mock-scan-file" key={file.id}>
+                  <span>{file.name}</span>
+                  <Badge tone={mockScannedIds.has(file.id) ? "amber" : "neutral"}>
+                    {mockScannedIds.has(file.id)
+                      ? "Mô phỏng · không phải clean thật"
+                      : `scan_status: ${file.scan_status}`}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+            <div className="demo-mock-scan-footer">
+              {mockScanRecord && (
+                <span className="tiny muted">
+                  Mô phỏng lúc {formatDate(mockScanRecord.completed_at, true)} · tạm lưu trong phiên trình duyệt.
+                </span>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                loading={demoScanBusy}
+                onClick={() => void runDemoScan()}
+              >
+                <ShieldCheck size={14} />
+                {mockScanComplete ? "Chạy lại Mock Scan" : "Chạy Mock Scan demo"}
+              </Button>
+            </div>
+          </div>
+        </>
+      )}
+      {!originalsReady && !mockScanAvailable && (
         <InlineNotice tone="warning" icon={<Clock3 size={15} />}>
-          Chưa thể ghi nhận hoặc chia sẻ quyết định: mọi file gốc phải có trạng thái malware scan <strong>clean</strong>. Chế độ demo cục bộ không chạy malware scan.
+          Chưa thể ghi nhận hoặc chia sẻ quyết định: mọi file gốc phải được malware scan thật và có trạng thái <strong>clean</strong>. Mock Scan chỉ dành cho artwork fixture được đóng gói sẵn trong Demo; file tải lên và workspace Supabase vẫn cần kết quả quét thật.
         </InlineNotice>
       )}
 
@@ -531,7 +629,7 @@ export function ReviewCollaborationPanel({
           ) : ownerMember && collaborationStatus === "not_shared" ? (
             <Button
               variant="secondary"
-              disabled={!originalsClean}
+              disabled={!originalsReady}
               onClick={() => setOwnerOpen(true)}
             >
               <FileCheck2 size={15} /> Xác nhận đã rà soát
@@ -648,7 +746,7 @@ export function ReviewCollaborationPanel({
           <div>
             <strong>Sẵn sàng chia sẻ?</strong>
             <p className="tiny muted">
-              Cần owner acceptance, commercial importer đã chấp nhận lời mời và file gốc clean.
+              Cần chủ nhãn xác nhận, commercial importer đã chấp nhận lời mời và file gốc có scan hợp lệ (Mock Scan chỉ dùng trong Demo cục bộ).
             </p>
           </div>
           <Button
@@ -738,7 +836,7 @@ export function ReviewCollaborationPanel({
             <Button variant="secondary" onClick={() => setOwnerOpen(false)}>Quay lại</Button>
             <Button
               loading={ownerBusy}
-              disabled={!originalsClean || ownerComment.trim().length < 5}
+              disabled={!originalsReady || ownerComment.trim().length < 5}
               onClick={() => void submitOwnerDecision()}
             >
               <FileCheck2 size={15} /> Lưu xác nhận chủ nhãn

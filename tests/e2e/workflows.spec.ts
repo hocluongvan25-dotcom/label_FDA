@@ -303,15 +303,48 @@ test("the DRAFT-only tea review stays unsigned and has no generated artifacts", 
   expect(fixture.sources.every((status: string) => status === "DRAFT")).toBe(true);
 });
 
-test("business importer invitations stay private until accepted and then await owner sharing", async ({
+test("demo Mock Scan unlocks only the full owner-importer collaboration flow", async ({
   page,
 }) => {
   const reviewId = "30000000-0000-4000-8000-000000000002";
+  await ready(page, `/reviews/${reviewId}`);
+  const mockScan = page.getByTestId("demo-mock-scan");
+  await expect(mockScan).toBeVisible();
+  await expect(mockScan).toContainText("scan_status: dev_unscanned");
+  await expect(mockScan).toContainText("Không phải quét antivirus");
   await persona(page, "Hoàng Nam · Mộc Trà Việt");
   await ready(page, `/reviews/${reviewId}`);
   await expect(
-    page.getByRole("heading", { name: "Quyết định giữa các bên" }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "Xác nhận đã rà soát" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Chia sẻ phiên bản" }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Chạy Mock Scan demo" }).click();
+  await expect(mockScan).toContainText("MÔ PHỎNG ĐÃ CHẠY");
+  await expect(mockScan).toContainText("Mô phỏng · không phải clean thật");
+  await expect(mockScan).toContainText("scan_status: dev_unscanned");
+
+  // The temporary mock result survives route reloads in this tab, but is not
+  // written into the canonical local fixture or represented as a real scan.
+  await page.reload();
+  const restoredMockScan = page.getByTestId("demo-mock-scan");
+  await expect(restoredMockScan).toContainText("MÔ PHỎNG ĐÃ CHẠY");
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  await page.getByRole("button", { name: "Xác nhận đã rà soát" }).click();
+  const ownerDecision = page.getByRole("dialog", {
+    name: "Chủ nhãn xác nhận đã rà soát",
+  });
+  await ownerDecision
+    .getByLabel("Ghi chú rà soát của chủ nhãn")
+    .fill("Chủ nhãn đã tự rà soát artwork demo phiên bản 3.");
+  await ownerDecision
+    .getByRole("button", { name: "Lưu xác nhận chủ nhãn" })
+    .click();
+  await expect(ownerDecision).not.toBeVisible();
+  await expect(page.getByText("Chủ nhãn đã xác nhận nhãn v3.")).toBeVisible();
+
   await page.getByRole("button", { name: "Mời importer" }).click();
   const invite = page.getByRole("dialog", {
     name: "Mời importer tham gia review",
@@ -339,12 +372,83 @@ test("business importer invitations stay private until accepted and then await o
 
   await persona(page, "Hoàng Nam · Mộc Trà Việt");
   await ready(page, `/reviews/${reviewId}`);
+  const share = page.getByRole("button", { name: "Chia sẻ phiên bản" });
+  await expect(share).toBeEnabled();
+  await share.click();
+  const shareDialog = page.getByRole("dialog", {
+    name: "Chia sẻ phiên bản đã được chủ nhãn rà soát",
+  });
+  await shareDialog
+    .getByLabel("Lý do / phạm vi chia sẻ")
+    .fill("Chia sẻ nhãn v3 để importer xem xét và xác nhận.");
+  await shareDialog
+    .getByRole("button", { name: "Chia sẻ đúng phiên bản" })
+    .click();
+  await expect(shareDialog).not.toBeVisible();
+  await expect(page.getByText("Chờ importer phản hồi")).toBeVisible();
+
+  await persona(page, "Minh Anh · An Nhiên Tea");
+  await ready(page, `/reviews/${reviewId}`);
+  await page.getByRole("button", { name: "Phản hồi phiên bản" }).click();
+  const importerDecision = page.getByRole("dialog", {
+    name: "Importer phản hồi nhãn",
+  });
+  await importerDecision
+    .getByLabel("Nhận xét của importer")
+    .fill("Importer đã xem và chấp nhận đúng nhãn phiên bản 3.");
+  await importerDecision
+    .getByRole("button", { name: "Ghi nhận phản hồi" })
+    .click();
+  await expect(importerDecision).not.toBeVisible();
   await expect(
-    page.getByText(/mọi file gốc phải có trạng thái malware scan clean/i),
+    page.getByText(/Hai bên đã xác nhận cùng phiên bản nhãn\./),
   ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Chia sẻ phiên bản" }),
-  ).toBeDisabled();
+
+  const fixture = await page.evaluate((targetReviewId) => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    const data = saved?.data;
+    const review = data?.reviews?.find(
+      (item: { id: string }) => item.id === targetReviewId,
+    );
+    const label = data?.labelVersions?.find(
+      (item: { id: string }) => item.id === review?.label_version_id,
+    );
+    return {
+      review,
+      scanStatuses: label?.original_files?.map(
+        (file: { scan_status: string }) => file.scan_status,
+      ),
+      decisions: data?.partyDecisions?.filter(
+        (item: { review_id: string }) => item.review_id === targetReviewId,
+      ),
+      reports: data?.reports?.filter(
+        (item: { review_id: string }) => item.review_id === targetReviewId,
+      ).length,
+      sessionMockScan: JSON.parse(
+        sessionStorage.getItem("vexim-demo-mock-scan-session-v1") ?? "{}",
+      ),
+    };
+  }, reviewId);
+  expect(fixture.review.collaboration_status).toBe("mutually_accepted");
+  expect(fixture.review.approved_by).toBeNull();
+  expect(fixture.scanStatuses).toEqual(["dev_unscanned", "dev_unscanned"]);
+  expect(fixture.decisions.map((entry: { party_role: string }) => entry.party_role).sort()).toEqual([
+    "commercial_importer",
+    "label_owner",
+  ]);
+  expect(
+    new Set(
+      fixture.decisions.map(
+        (entry: { label_bundle_sha256: string }) => entry.label_bundle_sha256,
+      ),
+    ).size,
+  ).toBe(1);
+  expect(fixture.reports).toBe(0);
+  expect(fixture.sessionMockScan[fixture.review.label_version_id].outcome).toBe(
+    "simulated_no_detection",
+  );
 });
 
 test("regulatory source changes require independent approval and preserve version history", async ({

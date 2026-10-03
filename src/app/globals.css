@@ -6294,6 +6294,78 @@ svg {
   flex: 0 0 auto;
   margin-top: 1px;
 }
+.demo-collaboration-guide,
+.demo-mock-scan-card {
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid #e8e0ca;
+  border-radius: 10px;
+  background: #fffdf6;
+}
+.demo-collaboration-guide-heading,
+.demo-mock-scan-heading,
+.demo-mock-scan-footer,
+.demo-mock-scan-file {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.demo-collaboration-guide-heading {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.demo-collaboration-guide p {
+  margin: 8px 0;
+  line-height: 1.65;
+}
+.demo-collaboration-guide code,
+.demo-mock-scan-card code {
+  color: #7c6842;
+  font-size: 10px;
+}
+.demo-collaboration-settings-link {
+  display: inline-flex;
+  margin-top: 2px;
+  color: #176b52;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.demo-mock-scan-card {
+  display: grid;
+  gap: 10px;
+  background: #fffefa;
+}
+.demo-mock-scan-heading h3 {
+  margin: 0 0 3px;
+  color: #4d614f;
+  font-size: 12px;
+  font-weight: 600;
+}
+.demo-mock-scan-files {
+  display: grid;
+  gap: 6px;
+}
+.demo-mock-scan-file {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #eee9dc;
+  border-radius: 7px;
+  background: #fff;
+  font-size: 11px;
+}
+.demo-mock-scan-file > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.demo-mock-scan-footer {
+  flex-wrap: wrap;
+}
+.demo-mock-scan-footer > span {
+  max-width: 440px;
+}
 .collaboration-party-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -6457,8 +6529,17 @@ svg {
     flex-direction: column;
   }
   .collaboration-share-row > .btn,
-  .collaboration-inbox-row > .btn {
+  .collaboration-inbox-row > .btn,
+  .demo-mock-scan-footer > .btn {
     width: 100%;
+  }
+  .demo-mock-scan-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .demo-mock-scan-file {
+    align-items: flex-start;
+    flex-direction: column;
   }
   .collaboration-participant-status {
     justify-content: flex-start;

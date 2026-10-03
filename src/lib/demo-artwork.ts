@@ -4,6 +4,26 @@ type DemoArtworkFile = Pick<
   LabelFile,
   "kind" | "mime_type" | "scan_status" | "storage_path" | "size" | "sha256"
 >;
+type MockScannableDemoArtworkFile = Pick<
+  LabelFile,
+  | "id"
+  | "name"
+  | "kind"
+  | "mime_type"
+  | "scan_status"
+  | "storage_path"
+  | "size"
+  | "sha256"
+  | "preview_url"
+>;
+
+const SEEDED_DEMO_ARTWORK_ID_PREFIX = "10000000-0000-4000-8000-";
+const SEEDED_FRONT_PREVIEWS = new Set([
+  "/samples/lotus-front-v2.svg",
+  "/samples/jasmine-front.svg",
+  "/samples/oolong-front.svg",
+]);
+const SEEDED_BACK_PREVIEW = "/samples/lotus-back-v2.svg";
 
 const BUNDLED_DEMO_ARTWORK: Readonly<
   Record<string, { previewUrl: string; size: number; sha256: string }>
@@ -43,4 +63,44 @@ export function demoArtworkPreviewUrl(file: DemoArtworkFile): string | null {
 
 export function isBundledDemoArtwork(file: DemoArtworkFile): boolean {
   return demoArtworkPreviewUrl(file) !== null;
+}
+
+/**
+ * Local-only Mock Scan allowlist. This recognizes the fixed, bundled seed
+ * fixtures without changing their real scan_status from dev_unscanned. It must
+ * never be used as evidence for the server-side scan gate.
+ */
+export function isMockScannableDemoArtwork(
+  file: MockScannableDemoArtworkFile,
+): boolean {
+  if (file.kind !== "original" || file.scan_status !== "dev_unscanned")
+    return false;
+  if (isBundledDemoArtwork(file)) return true;
+
+  if (
+    !file.id.startsWith(SEEDED_DEMO_ARTWORK_ID_PREFIX) ||
+    file.mime_type !== "image/svg+xml" ||
+    file.sha256 !== "DEMO_FIXTURE"
+  )
+    return false;
+  const seedFileNumber = Number(file.id.slice(SEEDED_DEMO_ARTWORK_ID_PREFIX.length));
+  if (!Number.isInteger(seedFileNumber) || seedFileNumber < 3 || seedFileNumber > 24)
+    return false;
+
+  if (file.storage_path === "demo/front")
+    return (
+      seedFileNumber % 2 === 1 &&
+      file.name === "tea-front-v2.svg" &&
+      file.size === 248832 &&
+      !!file.preview_url &&
+      SEEDED_FRONT_PREVIEWS.has(file.preview_url)
+    );
+  if (file.storage_path === "demo/back")
+    return (
+      seedFileNumber % 2 === 0 &&
+      file.name === "tea-back-v2.svg" &&
+      file.size === 189120 &&
+      file.preview_url === SEEDED_BACK_PREVIEW
+    );
+  return false;
 }

@@ -12,3 +12,12 @@ export function isSyntheticDemoReview(
       review.idempotency_key === "seed-0")
   );
 }
+
+/** True only for a built-in local seed review, never for customer uploads. */
+export function isLocalDemoFixtureReview(
+  review: Pick<Review, "id" | "idempotency_key">,
+): boolean {
+  return (
+    isSyntheticDemoReview(review) || /^seed-[1-9]\d*$/.test(review.idempotency_key)
+  );
+}

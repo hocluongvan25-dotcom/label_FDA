@@ -74,6 +74,7 @@ import {
   TRIAGE_ROUTE_META,
 } from "@/lib/constants";
 import { can } from "@/lib/permissions";
+import { isSyntheticDemoReview } from "@/lib/demo-review";
 import {
   assigneeName,
   downloadJson,
@@ -159,6 +160,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
         />
       </Card>
     );
+  const demoFixture = isSyntheticDemoReview(review);
   const product =
     review.dossier_snapshot ??
     app.data.products.find((p) => p.id === review.product_id)!;
@@ -244,6 +246,12 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             <span>Nhãn v{label.version}</span>
             <span>·</span>
             <span>US federal food labeling</span>
+            {demoFixture && (
+              <>
+                <span>·</span>
+                <span title="Mã hồ sơ demo">{review.idempotency_key}</span>
+              </>
+            )}
             <span>·</span>
             <span title="Người phụ trách">
               {assigneeName(app.data, review.assigned_to, app.actor)}
@@ -298,7 +306,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               <ShieldCheck size={14} /> Chuyển sang rà soát chuyên viên
             </Button>
           )}
-          {can(app.actor, "review") && (
+          {can(app.actor, "review") && !demoFixture && (
             <Button
               onClick={approve}
               disabled={
@@ -324,6 +332,15 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           )}
         </div>
       </div>
+      {demoFixture && (
+        <div style={{ marginBottom: 16 }}>
+          <InlineNotice icon={<Info size={15} />}>
+            Hồ sơ demo tổng hợp, chỉ để chuyên gia rà soát độc lập. Artwork là
+            SVG tĩnh chưa quét; không chạy OCR, triage hoặc rules trên fixture.
+            Cả 15 finding vẫn mở và các quy tắc/nguồn vẫn ở trạng thái DRAFT.
+          </InlineNotice>
+        </div>
+      )}
       {review.status === "SOURCE_UNAVAILABLE" && (
         <div style={{ marginBottom: 16 }}>
           <InlineNotice tone="warning">
@@ -681,7 +698,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             <Info size={12} /> Rà soát sơ bộ. Không phải phê duyệt của FDA.
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            {editable && (
+            {editable && !demoFixture && (
               <button
                 className="text-button"
                 style={{ fontSize: 11 }}
@@ -1518,6 +1535,7 @@ function PipelinePanel({
   onRerun: () => void;
 }) {
   const { actor, mode } = useApp();
+  const demoFixture = isSyntheticDemoReview(review);
   return (
     <Card className="pipeline-panel">
       <div
@@ -1538,6 +1556,14 @@ function PipelinePanel({
           </p>
         </div>
       </div>
+      {demoFixture && (
+        <div style={{ marginTop: 20 }}>
+          <InlineNotice icon={<Info size={16} />}>
+            Pipeline bị khóa cho fixture này: artwork tĩnh chưa quét, không có
+            OCR hoặc triage, và Rule Pack vẫn DRAFT.
+          </InlineNotice>
+        </div>
+      )}
       {review.idempotency_key.startsWith("seed-") && (
         <div style={{ marginTop: 20 }}>
           <InlineNotice icon={<Info size={16} />}>
@@ -1600,6 +1626,7 @@ function PipelinePanel({
             : "Job queue · tối đa 3 lần thử · dead-letter khi hết retry"}
         </span>
         {can(actor, "review") &&
+          !demoFixture &&
           (review.status !== "PROCESSING" ||
             review.idempotency_key.startsWith("seed-")) && (
             <Button variant="secondary" onClick={onRerun}>
@@ -2161,7 +2188,7 @@ function ExtractionModal({
             <Button variant="secondary" onClick={onClose}>
               Đóng
             </Button>
-            {editable && (
+            {editable && !isSyntheticDemoReview(review) && (
               <Button
                 onClick={() =>
                   void app

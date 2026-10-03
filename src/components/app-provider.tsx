@@ -28,6 +28,8 @@ import type {
 } from "@/lib/types";
 import { DEMO_ACTOR, PIPELINE_LABELS, MAX_FILES } from "@/lib/constants";
 import { createSeedData, sampleFields } from "@/lib/seed";
+import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
+import { isSyntheticDemoReview } from "@/lib/demo-review";
 import { canAccessOrg, assertCan, assertOrg } from "@/lib/permissions";
 import {
   uid,
@@ -571,6 +573,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const getFileBlob = async (file: LabelFile) => {
     if (modeRef.current === "supabase") {
+      const demoPreviewUrl = demoArtworkPreviewUrl(file);
+      if (demoPreviewUrl) {
+        const response = await fetch(demoPreviewUrl);
+        if (!response.ok)
+          throw new Error("Không tải được artwork SVG mẫu đã allowlist.");
+        const blob = await response.blob();
+        if (
+          blob.size !== file.size ||
+          (await sha256(await blob.arrayBuffer())) !== file.sha256
+        )
+          throw new Error("Artwork SVG mẫu không khớp SHA-256 đã allowlist.");
+        return blob;
+      }
       const result = await api<{ url: string }>(`/files/${file.id}/signed-url`);
       const response = await fetch(result.url);
       if (!response.ok)
@@ -963,6 +978,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ) => {
     assertCan(actorRef.current, "review");
     const r = reviewFor(reviewId);
+    if (isSyntheticDemoReview(r))
+      throw new Error(
+        "Đây là review demo tĩnh: không chạy OCR, triage hoặc rules trên fixture.",
+      );
     if (["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED"].includes(r.status))
       throw new Error(
         "Review đã đóng. Hãy tải phiên bản nhãn mới để giữ lịch sử báo cáo.",

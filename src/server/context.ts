@@ -20,6 +20,7 @@ import type {
   Review,
   AuditEntry,
 } from "@/lib/types";
+import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
 
 export class HttpError extends Error {
   constructor(
@@ -247,9 +248,14 @@ export async function workspace(
       .filter((i) => i.product_id === p.id)
       .sort((a, b) => a.order - b.order),
   }));
-  const files = values.label_files as (LabelFile & {
-    label_version_id: string;
-  })[];
+  const files = (
+    values.label_files as (LabelFile & {
+      label_version_id: string;
+    })[]
+  ).map((file) => {
+    const previewUrl = demoArtworkPreviewUrl(file);
+    return previewUrl ? { ...file, preview_url: previewUrl } : file;
+  });
   const fields = values.extracted_fields as (ExtractedField & {
     label_version_id: string;
   })[];

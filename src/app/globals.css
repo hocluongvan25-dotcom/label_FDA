@@ -6252,3 +6252,218 @@ svg {
     grid-template-columns: 68px minmax(0, 1fr);
   }
 }
+
+.review-collaboration-card {
+  margin: 14px 0 18px;
+  padding: 18px;
+  border: 1px solid #dce7dc;
+  background: linear-gradient(145deg, #ffffff 0%, #f7faf5 100%);
+}
+.collaboration-card-header {
+  align-items: flex-start;
+  gap: 12px;
+}
+.collaboration-card-header h2,
+.collaboration-section-heading h3 {
+  margin: 0;
+}
+.collaboration-title-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: #4f755b;
+  background: #eaf2e8;
+}
+.collaboration-workflow-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 14px 0;
+  padding: 11px 12px;
+  border: 1px solid #e3eadf;
+  border-radius: 10px;
+  color: #4f6651;
+  background: #f8faf6;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.collaboration-workflow-note svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.collaboration-party-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.collaboration-party-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #e5e9e2;
+  border-radius: 12px;
+  background: #fff;
+}
+.collaboration-party-heading,
+.collaboration-section-heading,
+.collaboration-share-row,
+.collaboration-inbox-row,
+.collaboration-participant-row,
+.collaboration-history-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.collaboration-party-heading {
+  width: 100%;
+  flex-wrap: wrap;
+}
+.collaboration-party-card p {
+  margin: 0;
+  line-height: 1.55;
+}
+.collaboration-participant-section,
+.collaboration-history {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid #e5e9e2;
+}
+.collaboration-section-heading {
+  margin-bottom: 10px;
+}
+.collaboration-participant-list,
+.collaboration-inbox-list,
+.proposal-list {
+  display: grid;
+  gap: 8px;
+}
+.collaboration-participant-row {
+  min-width: 0;
+  padding: 9px 11px;
+  border-radius: 9px;
+  background: #f8faf6;
+}
+.collaboration-participant-row > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.collaboration-participant-status {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.collaboration-share-row {
+  margin-top: 16px;
+  padding: 13px 14px;
+  border: 1px solid #e3eadf;
+  border-radius: 11px;
+  background: #f3f8f1;
+}
+.collaboration-share-row p {
+  margin: 4px 0 0;
+}
+.collaboration-history-item {
+  padding: 12px 13px;
+  border: 1px solid #e5e9e2;
+  border-radius: 10px;
+  background: #fff;
+}
+.collaboration-history-heading {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.collaboration-history-item > p {
+  margin: 9px 0;
+  color: #37473b;
+  font-size: 12px;
+}
+.collaboration-history-item code {
+  color: #3f654a;
+  font-size: 10px;
+}
+.proposal-list {
+  margin-top: 10px;
+}
+.proposal-item {
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+  border-left: 3px solid #91ad7e;
+  border-radius: 0 8px 8px 0;
+  background: #f5f8f3;
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.proposal-editor {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid #e5e9e2;
+}
+.proposal-editor h3 {
+  margin: 0 0 5px;
+}
+.proposal-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.collaboration-inbox {
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid #dce7dc;
+  background: #fbfcfa;
+}
+.collaboration-inbox-row {
+  padding: 10px 11px;
+  border: 1px solid #e8ede5;
+  border-radius: 9px;
+  background: #fff;
+}
+.collaboration-inbox-row > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+.collaboration-modal-content {
+  display: grid;
+  gap: 10px;
+}
+@media (max-width: 900px) {
+  .collaboration-party-grid {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 600px) {
+  .review-collaboration-card,
+  .collaboration-inbox {
+    padding: 13px;
+  }
+  .collaboration-share-row,
+  .collaboration-inbox-row,
+  .collaboration-participant-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .collaboration-share-row > .btn,
+  .collaboration-inbox-row > .btn {
+    width: 100%;
+  }
+  .collaboration-participant-status {
+    justify-content: flex-start;
+  }
+  .proposal-form-grid {
+    grid-template-columns: 1fr;
+  }
+}

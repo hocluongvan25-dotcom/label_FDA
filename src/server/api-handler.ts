@@ -502,14 +502,14 @@ export async function apiHandler(request: Request, segments: string[]) {
     ) {
       const body = z
         .object({
-          organization_id: uuid,
+          organization_contact_email: z.string().trim().email().max(254),
           party_role: z.enum(["commercial_importer", "fsvp_importer"]),
         })
         .strict()
         .parse(await readJson(request));
-      result = await rpc(ctx.db, "vexim_invite_review_participant", {
+      result = await rpc(ctx.db, "vexim_invite_review_participant_by_email", {
         rid: uuid.parse(segments[1]),
-        participant_org: body.organization_id,
+        participant_email: body.organization_contact_email,
         requested_role: body.party_role,
       });
     } else if (

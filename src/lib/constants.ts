@@ -9,9 +9,9 @@ import type {
 } from "./types";
 
 export const DISCLAIMER =
-  "Đây là đánh giá sơ bộ trong phạm vi nhãn thực phẩm liên bang Hoa Kỳ, dựa trên dữ liệu được cung cấp, phiên bản nguồn và quy tắc tại thời điểm rà soát. Báo cáo không phải phê duyệt hoặc chứng nhận của FDA, không bảo đảm thông quan và không thay thế tư vấn pháp lý. Kết luận phải được chuyên viên Vexim xác nhận.";
+  "Đây là đánh giá sơ bộ trong phạm vi nhãn thực phẩm liên bang Hoa Kỳ, dựa trên dữ liệu được cung cấp, phiên bản nguồn và quy tắc tại thời điểm rà soát. Báo cáo không phải phê duyệt hoặc chứng nhận của FDA, không bảo đảm thông quan và không thay thế tư vấn pháp lý. Nếu các bên chọn phát hành báo cáo chuyên môn của Vexim, chuyên viên Vexim sẽ xác nhận nội dung báo cáo riêng biệt với quyết định thương mại giữa các bên.";
 export const DISCLAIMER_EN =
-  "This is a preliminary review within the stated US federal food-labeling scope, based on supplied information and the recorded source/rule versions. It is not FDA approval or certification, does not guarantee customs clearance, and is not a substitute for legal advice. A Vexim reviewer must confirm the report.";
+  "This is a preliminary review within the stated US federal food-labeling scope, based on supplied information and the recorded source/rule versions. It is not FDA approval or certification, does not guarantee customs clearance, and is not a substitute for legal advice. If the parties request a Vexim expert report, a Vexim reviewer will confirm that report separately from the parties' commercial decisions.";
 export const DEMO_ACTOR = {
   id: "demo-reviewer",
   name: "Linh Nguyễn",

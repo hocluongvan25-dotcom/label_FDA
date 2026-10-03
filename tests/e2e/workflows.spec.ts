@@ -303,6 +303,50 @@ test("the DRAFT-only tea review stays unsigned and has no generated artifacts", 
   expect(fixture.sources.every((status: string) => status === "DRAFT")).toBe(true);
 });
 
+test("business importer invitations stay private until accepted and then await owner sharing", async ({
+  page,
+}) => {
+  const reviewId = "30000000-0000-4000-8000-000000000002";
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  await expect(
+    page.getByRole("heading", { name: "Quyết định giữa các bên" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Mời importer" }).click();
+  const invite = page.getByRole("dialog", {
+    name: "Mời importer tham gia review",
+  });
+  await invite
+    .getByLabel("Email liên hệ đã đăng ký của tổ chức")
+    .fill("contact@annhientea.example");
+  await invite.getByRole("button", { name: "Tạo lời mời" }).click();
+  await expect(invite).not.toBeVisible();
+
+  await persona(page, "Minh Anh · An Nhiên Tea");
+  await ready(page, "/");
+  await expect(
+    page.getByRole("heading", { name: "Lời mời cộng tác nhãn" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Xem & chấp nhận" }).click();
+  const acceptance = page.getByRole("dialog", {
+    name: "Chấp nhận lời mời importer",
+  });
+  await expect(acceptance).toContainText("chủ nhãn chỉ chia sẻ");
+  await acceptance.getByRole("button", { name: "Chấp nhận lời mời" }).click();
+  await expect(acceptance).not.toBeVisible();
+  await expect(page.getByText("Đã nhận · chờ chủ nhãn chia sẻ")).toBeVisible();
+  await expect(page.locator(`a[href="/reviews/${reviewId}"]`)).toHaveCount(0);
+
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  await expect(
+    page.getByText(/mọi file gốc phải có trạng thái malware scan clean/i),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Chia sẻ phiên bản" }),
+  ).toBeDisabled();
+});
+
 test("regulatory source changes require independent approval and preserve version history", async ({
   page,
 }) => {

@@ -1042,14 +1042,32 @@ describe("Collaborative review parties and version-bound decisions", () => {
       [{ ...productDraft(ids.orgA), name: "Unrelated owner product" }],
     );
 
+    await actor(db, null, "service_role");
+    const authUserCount = (
+      await query("select count(*)::integer as count from auth.users")
+    ).rows[0].count;
+    await actor(db, ids.customerA);
+    await expect(
+      call(db, "vexim_invite_review_participant_by_email", [
+        review.id,
+        "unknown@test.example",
+        "commercial_importer",
+      ]),
+    ).rejects.toThrow(/no unique active organization/i);
+    await actor(db, null, "service_role");
+    expect(
+      (
+        await query("select count(*)::integer as count from auth.users")
+      ).rows[0].count,
+    ).toBe(authUserCount);
     await actor(db, ids.customerA);
     const participant = await call<{
       id: string;
       status: string;
       party_role: string;
-    }>(db, "vexim_invite_review_participant", [
+    }>(db, "vexim_invite_review_participant_by_email", [
       review.id,
-      ids.orgB,
+      "B@test.example",
       "commercial_importer",
     ]);
     expect(participant).toMatchObject({

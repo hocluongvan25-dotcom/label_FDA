@@ -81,6 +81,17 @@ export function ProductDetail({ productId }: { productId: string }) {
   const org = app.data.organizations.find(
     (o) => o.id === product.organization_id,
   );
+  const organizationName =
+    org?.name ??
+    app.data.reviewParticipants?.find(
+      (participant) =>
+        participant.review_id === latest?.id &&
+        participant.party_role === "label_owner",
+    )?.organization_name_snapshot;
+  const canManageProduct =
+    can(app.actor, "products") &&
+    (!app.actor.role.startsWith("customer") ||
+      app.actor.organization_id === product.organization_id);
   const requests = app.data.requests.filter((r) =>
     reviews.some((rv) => rv.id === r.review_id),
   );
@@ -129,13 +140,13 @@ export function ProductDetail({ productId }: { productId: string }) {
             <div className="detail-meta">
               <span>{product.brand}</span>
               <span>·</span>
-              <span>{org?.name}</span>
+              <span>{organizationName}</span>
               <StatusBadge status={latest?.status ?? "DRAFT"} />
             </div>
           </div>
         </div>
         <div className="page-actions">
-          {can(app.actor, "products") && (
+          {canManageProduct && (
             <>
               <Link
                 href={`/products/${product.id}/edit`}

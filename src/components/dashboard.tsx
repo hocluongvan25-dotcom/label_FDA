@@ -28,6 +28,7 @@ import {
   SeverityBadge,
 } from "./ui";
 import { ProductsTable } from "./products-table";
+import { CollaborationInbox } from "./review-collaboration";
 import { can } from "@/lib/permissions";
 import {
   findingCounts,
@@ -182,6 +183,7 @@ export function Dashboard() {
           </>
         }
       />
+      <CollaborationInbox />
       <div className="stats-grid">
         {stats.map((s) => (
           <Link href={s.href} className="stat-card" key={s.label}>
@@ -241,10 +243,11 @@ export function Dashboard() {
               <Leaf size={19} />
             </span>
             <div>
-              <strong>Chuyên gia quyết định. Công nghệ hỗ trợ.</strong>
+              <strong>Chủ nhãn xác nhận. Chuyên gia hỗ trợ khi cần.</strong>
               <p>
-                Mỗi phát hiện được đối chiếu với evidence và nguồn tham chiếu
-                trước khi phát hành báo cáo.
+                Chủ nhãn rà soát trước; commercial importer chỉ phản hồi phiên
+                bản đã chia sẻ. Vexim quản lý nguồn / quy tắc và có thể được mời
+                rà soát chuyên sâu — không phải cổng phê duyệt mặc định giữa hai doanh nghiệp.
               </p>
             </div>
             <button onClick={() => setGuide(true)}>

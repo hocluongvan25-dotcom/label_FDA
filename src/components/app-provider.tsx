@@ -23,6 +23,9 @@ import type {
   RegulatorySource,
   Report,
   Review,
+  ReviewParticipant,
+  ReviewPartyDecisionEntry,
+  ReviewPartyDecisionType,
   ReviewStatus,
   Role,
 } from "@/lib/types";
@@ -34,6 +37,7 @@ import {
 } from "@/lib/seed";
 import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
 import { isSyntheticDemoReview } from "@/lib/demo-review";
+import { localLabelBundleSha256 } from "@/lib/collaboration";
 import { canAccessOrg, assertCan, assertOrg } from "@/lib/permissions";
 import {
   uid,
@@ -138,6 +142,28 @@ interface ContextValue {
     reviewId: string,
     status: ReviewStatus,
     reason: string,
+  ) => Promise<void>;
+  inviteReviewParticipant: (
+    reviewId: string,
+    organizationContactEmail: string,
+    partyRole: "commercial_importer" | "fsvp_importer",
+  ) => Promise<void>;
+  acceptReviewParticipant: (
+    participantId: string,
+    attestsFsvp?: boolean,
+    attestationNote?: string,
+  ) => Promise<void>;
+  removeReviewParticipant: (
+    participantId: string,
+    reason: string,
+  ) => Promise<void>;
+  shareReview: (reviewId: string, comment: string) => Promise<void>;
+  recordPartyDecision: (
+    reviewId: string,
+    partyRole: "label_owner" | "commercial_importer",
+    decision: ReviewPartyDecisionType,
+    comment: string,
+    proposedChanges?: ReviewPartyDecisionEntry["proposed_changes"],
   ) => Promise<void>;
   approveReport: (reviewId: string, comment: string) => Promise<Report>;
   downloadReport: (reportId: string, format: "pdf" | "json") => Promise<void>;
@@ -377,6 +403,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           loadRemote().catch(() => undefined);
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "review_participants" },
+        () => {
+          loadRemote().catch(() => undefined);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "review_party_decisions" },
+        () => {
+          loadRemote().catch(() => undefined);
+        },
+      )
       .subscribe();
     // Realtime is optional; one interval also handles deployments without publication setup.
     const timer = setInterval(() => {
@@ -430,22 +470,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         name: "Quang Lê",
         email: "quang.le@vexim.example",
       },
-      customer_admin: {
-        id: "demo-customer-admin",
-        name: "Minh Anh",
-        email: "contact@annhientea.example",
-      },
-      customer_contributor: {
-        id: "demo-contributor",
-        name: "Tuấn Anh",
-        email: "tuan.anh@annhientea.example",
-      },
+      customer_admin: alternate
+        ? {
+            id: "demo-customer-admin-importer",
+            name: "Hoàng Nam",
+            email: "export@moctraviet.example",
+          }
+        : {
+            id: "demo-customer-admin",
+            name: "Minh Anh",
+            email: "contact@annhientea.example",
+          },
+      customer_contributor: alternate
+        ? {
+            id: "demo-contributor-importer",
+            name: "Khánh Linh",
+            email: "linh@moctraviet.example",
+          }
+        : {
+            id: "demo-contributor",
+            name: "Tuấn Anh",
+            email: "tuan.anh@annhientea.example",
+          },
     };
     const next = {
       ...identities[role],
       role,
       organization_id: role.startsWith("customer")
-        ? (dataRef.current.organizations[0]?.id ?? null)
+        ? (dataRef.current.organizations[alternate ? 1 : 0]?.id ?? null)
         : null,
     };
     updateActor(next);
@@ -1327,6 +1379,417 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
   };
+  const collaborationReviewFor = (reviewId: string) => {
+    const review = dataRef.current.reviews.find((r) => r.id === reviewId);
+    if (!review) throw new Error("Không tìm thấy review hoặc chưa được chia sẻ.");
+    return review;
+  };
+  const requireDemoOrganizationAdmin = (organizationId: string) => {
+    const current = actorRef.current;
+    if (
+      current.role !== "system_admin" &&
+      (current.role !== "customer_admin" ||
+        current.organization_id !== organizationId)
+    )
+      throw new Error("Thao tác này cần quản trị viên của tổ chức liên quan.");
+  };
+  const inviteReviewParticipant = async (
+    reviewId: string,
+    organizationContactEmail: string,
+    partyRole: "commercial_importer" | "fsvp_importer",
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/participants`, {
+        organization_contact_email: organizationContactEmail,
+        party_role: partyRole,
+      });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const email = organizationContactEmail.trim().toLowerCase();
+    const emailParts = email.split("@");
+    if (
+      email.length > 254 ||
+      email.includes(" ") ||
+      emailParts.length !== 2 ||
+      !emailParts[0] ||
+      !emailParts[1]?.includes(".")
+    )
+      throw new Error("Nhập email liên hệ hợp lệ của tổ chức importer.");
+    const matches = dataRef.current.organizations.filter(
+      (organization) =>
+        organization.status === "active" &&
+        organization.contact_email.trim().toLowerCase() === email,
+    );
+    if (matches.length !== 1)
+      throw new Error(
+        "Không tìm thấy duy nhất một tổ chức đang hoạt động với email đã nhập.",
+      );
+    const target = matches[0];
+    if (target.id === review.organization_id)
+      throw new Error("Importer phải là một tổ chức khác với chủ nhãn.");
+    const prior = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.organization_id === target.id &&
+        participant.party_role === partyRole,
+    );
+    if (prior && prior.status !== "removed")
+      throw new Error("Tổ chức này đã được mời hoặc đang tham gia review.");
+    const timestamp = now();
+    const participant: ReviewParticipant = prior
+      ? {
+          ...prior,
+          organization_name_snapshot: target.name,
+          status: "invited",
+          invited_by: actorRef.current.id,
+          invited_at: timestamp,
+          activated_by: null,
+          activated_at: null,
+          fsvp_attested_by: null,
+          fsvp_attested_at: null,
+          fsvp_attestation_note: null,
+        }
+      : {
+          id: uid(),
+          review_id: reviewId,
+          organization_id: target.id,
+          organization_name_snapshot: target.name,
+          party_role: partyRole,
+          status: "invited",
+          invited_by: actorRef.current.id,
+          invited_at: timestamp,
+          activated_by: null,
+          activated_at: null,
+          fsvp_attested_by: null,
+          fsvp_attested_at: null,
+          fsvp_attestation_note: null,
+          created_at: timestamp,
+        };
+    commit((d) => {
+      d.reviewParticipants ??= [];
+      const existingIndex = d.reviewParticipants.findIndex(
+        (entry) => entry.id === participant.id,
+      );
+      if (existingIndex >= 0) d.reviewParticipants[existingIndex] = participant;
+      else d.reviewParticipants.push(participant);
+      log(
+        d,
+        "review.participant_invited",
+        "review",
+        reviewId,
+        `Đã mời ${target.name} tham gia review với vai trò ${partyRole}.`,
+        review.organization_id,
+        { participant_id: participant.id, party_role: partyRole },
+      );
+    });
+  };
+  const acceptReviewParticipant = async (
+    participantId: string,
+    attestsFsvp = false,
+    attestationNote = "",
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/review-participants/${participantId}/accept`, {
+        attests_fsvp: attestsFsvp,
+        attestation_note: attestationNote,
+      });
+      return;
+    }
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) => entry.id === participantId,
+    );
+    if (!participant || participant.status !== "invited")
+      throw new Error("Lời mời không còn ở trạng thái chờ chấp nhận.");
+    requireDemoOrganizationAdmin(participant.organization_id);
+    const note = attestationNote.trim();
+    if (participant.party_role === "fsvp_importer") {
+      if (!attestsFsvp || note.length < 10 || note.length > 5000)
+        throw new Error(
+          "Cần xác nhận rõ tư cách FSVP importer và nhập căn cứ ít nhất 10 ký tự.",
+        );
+    } else if (attestsFsvp || note) {
+      throw new Error(
+        "Vai trò commercial importer không tự xác nhận tư cách FSVP.",
+      );
+    }
+    const review = collaborationReviewFor(participant.review_id);
+    const timestamp = now();
+    commit((d) => {
+      const current = d.reviewParticipants!.find(
+        (entry) => entry.id === participantId,
+      )!;
+      Object.assign(current, {
+        status: "active",
+        activated_by: actorRef.current.id,
+        activated_at: timestamp,
+        fsvp_attested_by:
+          current.party_role === "fsvp_importer" ? actorRef.current.id : null,
+        fsvp_attested_at:
+          current.party_role === "fsvp_importer" ? timestamp : null,
+        fsvp_attestation_note:
+          current.party_role === "fsvp_importer" ? note : null,
+      });
+      log(
+        d,
+        "review.participant_accepted",
+        "review",
+        review.id,
+        "Đã chấp nhận lời mời tham gia review.",
+        review.organization_id,
+        { participant_id: participantId, party_role: current.party_role },
+      );
+    });
+  };
+  const removeReviewParticipant = async (
+    participantId: string,
+    reason: string,
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(
+        `/review-participants/${participantId}`,
+        { reason },
+        "DELETE",
+      );
+      return;
+    }
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) => entry.id === participantId,
+    );
+    if (!participant || participant.party_role === "label_owner")
+      throw new Error("Không thể xóa participant chủ sở hữu nhãn.");
+    const review = collaborationReviewFor(participant.review_id);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const note = reason.trim();
+    if (note.length < 5 || note.length > 5000)
+      throw new Error("Nhập lý do thu hồi quyền từ 5 đến 5.000 ký tự.");
+    if (participant.status === "removed") return;
+    commit((d) => {
+      d.reviewParticipants!.find((entry) => entry.id === participantId)!.status =
+        "removed";
+      log(
+        d,
+        "review.participant_removed",
+        "review",
+        review.id,
+        note,
+        review.organization_id,
+        { participant_id: participantId, party_role: participant.party_role },
+      );
+    });
+  };
+  const shareReview = async (reviewId: string, comment: string) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/share`, { comment });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const note = comment.trim();
+    if (note.length < 5 || note.length > 5000)
+      throw new Error("Nêu lý do chia sẻ từ 5 đến 5.000 ký tự.");
+    if (
+      !["AI_REVIEW_READY", "HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+        review.status,
+      )
+    )
+      throw new Error("Phân tích cần sẵn sàng trước khi chia sẻ review.");
+    if ((review.collaboration_status ?? "not_shared") !== "not_shared")
+      throw new Error(
+        "Review đã được chia sẻ; cần tạo chu kỳ review mới cho phiên bản nhãn khác.",
+      );
+    const commercial = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.party_role === "commercial_importer" &&
+        participant.status === "active",
+    );
+    if (!commercial)
+      throw new Error("Cần có một commercial importer đã chấp nhận lời mời.");
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const bundleHash = await localLabelBundleSha256(label);
+    const owner = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.party_role === "label_owner" &&
+        participant.organization_id === review.organization_id &&
+        participant.status === "active",
+    );
+    if (
+      !owner ||
+      !(dataRef.current.partyDecisions ?? []).some(
+        (decision) =>
+          decision.review_id === reviewId &&
+          decision.label_version_id === review.label_version_id &&
+          decision.participant_id === owner.id &&
+          decision.decision === "accepted" &&
+          decision.label_bundle_sha256 === bundleHash,
+      )
+    )
+      throw new Error("Chủ nhãn phải xác nhận đúng phiên bản trước khi chia sẻ.");
+    commit((d) => {
+      d.reviews.find((entry) => entry.id === reviewId)!.collaboration_status =
+        "awaiting_importer";
+      d.reviews.find((entry) => entry.id === reviewId)!.updated_at = now();
+      log(
+        d,
+        "review.shared_with_importer",
+        "review",
+        reviewId,
+        note,
+        review.organization_id,
+        {
+          label_version_id: review.label_version_id,
+          label_bundle_sha256: bundleHash,
+        },
+      );
+    });
+  };
+  const recordPartyDecision = async (
+    reviewId: string,
+    partyRole: "label_owner" | "commercial_importer",
+    decisionType: ReviewPartyDecisionType,
+    comment: string,
+    proposedChanges: ReviewPartyDecisionEntry["proposed_changes"] = [],
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/party-decisions`, {
+        party_role: partyRole,
+        decision: decisionType,
+        comment,
+        proposed_changes: proposedChanges,
+      });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    const note = comment.trim();
+    if (note.length < 5 || note.length > 10000)
+      throw new Error("Nhập lý do từ 5 đến 10.000 ký tự.");
+    if (proposedChanges.length > 50)
+      throw new Error("Tối đa 50 chỉnh sửa có chú thích trong một đề xuất.");
+    if (decisionType === "proposed_edit") {
+      if (
+        !proposedChanges.length ||
+        proposedChanges.some(
+          (change) =>
+            !change.field.trim() ||
+            change.field.trim().length > 200 ||
+            !change.proposed_value.trim() ||
+            change.proposed_value.trim().length > 5000 ||
+            change.reason.trim().length < 5 ||
+            change.reason.trim().length > 2000 ||
+            (change.current_value?.length ?? 0) > 5000,
+        )
+      )
+        throw new Error("Đề xuất cần chú thích hợp lệ cho từng trường.");
+    } else if (proposedChanges.length) {
+      throw new Error("Chỉ đề xuất chỉnh sửa mới chứa các thay đổi có chú thích.");
+    }
+    if (
+      !["AI_REVIEW_READY", "HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+        review.status,
+      )
+    )
+      throw new Error("Review chưa sẵn sàng ghi nhận quyết định của các bên.");
+    const actorOrganization = actorRef.current.organization_id;
+    if (!actorOrganization)
+      throw new Error("Cần tài khoản thành viên của tổ chức tham gia review.");
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) =>
+        entry.review_id === reviewId &&
+        entry.party_role === partyRole &&
+        entry.organization_id === actorOrganization &&
+        entry.status === "active",
+    );
+    if (!participant)
+      throw new Error("Tài khoản này chưa tham gia review với vai trò đó.");
+    if (
+      partyRole === "label_owner" &&
+      (participant.organization_id !== review.organization_id ||
+        decisionType !== "accepted" ||
+        (review.collaboration_status ?? "not_shared") !== "not_shared")
+    )
+      throw new Error("Chỉ chủ nhãn có thể xác nhận trước khi chia sẻ review.");
+    if (partyRole === "commercial_importer") {
+      const collaborationStatus = review.collaboration_status ?? "not_shared";
+      if (!["awaiting_importer", "changes_requested"].includes(collaborationStatus))
+        throw new Error("Chủ nhãn chưa chia sẻ phiên bản này với importer.");
+      if (decisionType === "accepted") {
+        requireDemoOrganizationAdmin(participant.organization_id);
+        if (collaborationStatus !== "awaiting_importer")
+          throw new Error("Yêu cầu chỉnh sửa cần phiên bản nhãn mới trước khi xác nhận.");
+      }
+    }
+    if (partyRole === "label_owner" && decisionType !== "accepted")
+      throw new Error("Yêu cầu thay đổi hoặc đề xuất chỉ dành cho commercial importer.");
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const bundleHash = await localLabelBundleSha256(label);
+    if (partyRole === "commercial_importer" && decisionType === "accepted") {
+      const owner = (dataRef.current.reviewParticipants ?? []).find(
+        (entry) =>
+          entry.review_id === reviewId &&
+          entry.party_role === "label_owner" &&
+          entry.organization_id === review.organization_id &&
+          entry.status === "active",
+      );
+      if (
+        !owner ||
+        !(dataRef.current.partyDecisions ?? []).some(
+          (entry) =>
+            entry.review_id === reviewId &&
+            entry.label_version_id === review.label_version_id &&
+            entry.participant_id === owner.id &&
+            entry.decision === "accepted" &&
+            entry.label_bundle_sha256 === bundleHash,
+        )
+      )
+        throw new Error("Chủ nhãn chưa xác nhận đúng phiên bản này.");
+    }
+    const row: ReviewPartyDecisionEntry = {
+      id: uid(),
+      review_id: reviewId,
+      label_version_id: review.label_version_id,
+      participant_id: participant.id,
+      party_role: partyRole,
+      decision: decisionType,
+      comment: note,
+      proposed_changes: proposedChanges,
+      label_bundle_sha256: bundleHash,
+      actor_id: actorRef.current.id,
+      actor_name_snapshot: actorRef.current.name,
+      created_at: now(),
+    };
+    commit((d) => {
+      d.partyDecisions ??= [];
+      d.partyDecisions.push(row);
+      if (partyRole === "commercial_importer")
+        d.reviews.find((entry) => entry.id === reviewId)!.collaboration_status =
+          decisionType === "accepted" ? "mutually_accepted" : "changes_requested";
+      log(
+        d,
+        "review.party_decision_recorded",
+        "review",
+        reviewId,
+        "Đã ghi nhận quyết định của một bên cho phiên bản nhãn hiện tại.",
+        review.organization_id,
+        {
+          decision_id: row.id,
+          participant_id: participant.id,
+          party_role: partyRole,
+          decision: decisionType,
+          label_version_id: review.label_version_id,
+          label_bundle_sha256: bundleHash,
+        },
+      );
+    });
+  };
   const approveReport = async (reviewId: string, comment: string) => {
     const review = reviewFor(reviewId);
     if (isSyntheticDemoReview(review))
@@ -1780,45 +2243,83 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const visible = actor.role.startsWith("customer")
-    ? {
-        ...rawData,
-        staff: [],
-        organizations: rawData.organizations.filter((o) =>
-          canAccessOrg(actor, o.id),
-        ),
-        members: rawData.members.filter((m) =>
-          canAccessOrg(actor, m.organization_id),
-        ),
-        products: rawData.products.filter((p) =>
-          canAccessOrg(actor, p.organization_id),
-        ),
-        labelVersions: rawData.labelVersions.filter((v) =>
-          canAccessOrg(actor, v.organization_id),
-        ),
-        reviews: rawData.reviews.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        findings: rawData.findings.filter((f) =>
-          canAccessOrg(actor, f.organization_id),
-        ),
-        requests: rawData.requests.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        reports: rawData.reports.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        audit: rawData.audit.filter(
-          (a) => a.organization_id && canAccessOrg(actor, a.organization_id),
-        ),
-        sources: rawData.sources.filter((s) =>
-          rawData.findings.some(
-            (f) =>
-              canAccessOrg(actor, f.organization_id) &&
-              f.citation_ids.includes(s.id),
+    ? (() => {
+        const sharedReviewIds = new Set(
+          (rawData.reviewParticipants ?? [])
+            .filter(
+              (participant) =>
+                participant.organization_id === actor.organization_id &&
+                participant.status === "active" &&
+                participant.party_role !== "label_owner",
+            )
+            .map((participant) => participant.review_id)
+            .filter((reviewId) => {
+              const review = rawData.reviews.find((r) => r.id === reviewId);
+              return (
+                !!review &&
+                (review.collaboration_status ?? "not_shared") !== "not_shared"
+              );
+            }),
+        );
+        const reviews = rawData.reviews.filter(
+          (r) =>
+            canAccessOrg(actor, r.organization_id) || sharedReviewIds.has(r.id),
+        );
+        const visibleReviewIds = new Set(reviews.map((r) => r.id));
+        const visibleProductIds = new Set(reviews.map((r) => r.product_id));
+        const visibleLabelVersionIds = new Set(
+          reviews.map((r) => r.label_version_id),
+        );
+        const findings = rawData.findings.filter((finding) =>
+          visibleReviewIds.has(finding.review_id),
+        );
+        return {
+          ...rawData,
+          staff: [],
+          organizations: rawData.organizations.filter((o) =>
+            canAccessOrg(actor, o.id),
           ),
-        ),
-        rules: [],
-      }
+          members: rawData.members.filter((m) =>
+            canAccessOrg(actor, m.organization_id),
+          ),
+          products: rawData.products.filter(
+            (p) =>
+              canAccessOrg(actor, p.organization_id) ||
+              visibleProductIds.has(p.id),
+          ),
+          labelVersions: rawData.labelVersions.filter(
+            (v) =>
+              canAccessOrg(actor, v.organization_id) ||
+              visibleLabelVersionIds.has(v.id),
+          ),
+          reviews,
+          findings,
+          requests: rawData.requests.filter((request) =>
+            visibleReviewIds.has(request.review_id),
+          ),
+          reports: rawData.reports.filter((report) =>
+            visibleReviewIds.has(report.review_id),
+          ),
+          reviewParticipants: (rawData.reviewParticipants ?? []).filter(
+            (participant) =>
+              canAccessOrg(actor, participant.organization_id) ||
+              visibleReviewIds.has(participant.review_id),
+          ),
+          partyDecisions: (rawData.partyDecisions ?? []).filter((decision) =>
+            visibleReviewIds.has(decision.review_id),
+          ),
+          preScreeningReports: (rawData.preScreeningReports ?? []).filter(
+            (report) => visibleReviewIds.has(report.review_id),
+          ),
+          audit: rawData.audit.filter(
+            (a) => a.organization_id && canAccessOrg(actor, a.organization_id),
+          ),
+          sources: rawData.sources.filter((source) =>
+            findings.some((finding) => finding.citation_ids.includes(source.id)),
+          ),
+          rules: [],
+        };
+      })()
     : actor.role === "regulatory_admin"
       ? {
           ...rawData,
@@ -1861,6 +2362,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         resolveRequest,
         assignReview,
         transitionReview,
+        inviteReviewParticipant,
+        acceptReviewParticipant,
+        removeReviewParticipant,
+        shareReview,
+        recordPartyDecision,
         approveReport,
         downloadReport,
         getFileBlob,

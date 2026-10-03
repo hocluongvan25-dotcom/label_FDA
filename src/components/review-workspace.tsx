@@ -48,6 +48,7 @@ import {
   Textarea,
 } from "./ui";
 import { LabelViewer } from "./label-viewer";
+import { ReviewCollaborationPanel } from "./review-collaboration";
 import type {
   Actor,
   ComplianceRule,
@@ -239,7 +240,13 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               {
                 app.data.organizations.find(
                   (o) => o.id === product.organization_id,
-                )?.name
+                )?.name ??
+                app.data.reviewParticipants?.find(
+                  (participant) =>
+                    participant.review_id === review.id &&
+                    participant.party_role === "label_owner",
+                )?.organization_name_snapshot ??
+                "Doanh nghiệp sở hữu nhãn"
               }
             </span>
             <span>·</span>
@@ -297,13 +304,13 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                   .transitionReview(
                     review.id,
                     "HUMAN_REVIEW",
-                    "Chuyển sang rà soát chuyên viên trước khi cân nhắc báo cáo cuối.",
+                    "Mở rà soát chuyên gia Vexim theo yêu cầu; quyết định giữa chủ nhãn và importer vẫn độc lập.",
                   )
-                  .then(() => app.notify("Đã chuyển sang rà soát chuyên viên."))
+                  .then(() => app.notify("Đã mở luồng rà soát chuyên gia Vexim."))
                   .catch((e) => app.notify(errorMessage(e), "error"))
               }
             >
-              <ShieldCheck size={14} /> Chuyển sang rà soát chuyên viên
+              <ShieldCheck size={14} /> Mở rà soát chuyên gia (tùy chọn)
             </Button>
           )}
           {can(app.actor, "review") && !demoFixture && (
@@ -344,6 +351,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           </InlineNotice>
         </div>
       )}
+      {!demoFixture && <ReviewCollaborationPanel review={review} />}
       {review.status === "SOURCE_UNAVAILABLE" && (
         <div style={{ marginBottom: 16 }}>
           <InlineNotice tone="warning">

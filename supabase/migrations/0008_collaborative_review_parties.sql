@@ -329,6 +329,39 @@ begin
 end
 $$;
 
+-- Resolve an existing organization through its exact registered contact email.
+-- No Auth user is created, and the target's organization details are not listed.
+create function public.vexim_invite_review_participant_by_email(
+  rid uuid,
+  participant_email text,
+  requested_role public.review_party_role
+) returns jsonb language plpgsql security definer set search_path=public,pg_temp as $$
+declare
+  matching_orgs uuid[];
+  r public.reviews;
+begin
+  select * into r from public.reviews where id=rid;
+  if not found or not public.app_can_admin_org(r.organization_id) then
+    raise exception 'Label-owner organization admin required' using errcode='42501';
+  end if;
+  if requested_role not in ('commercial_importer','fsvp_importer') then
+    raise exception 'Only importer parties can be invited';
+  end if;
+  if length(trim(coalesce(participant_email,''))) not between 3 and 254
+     or trim(participant_email) !~ '^[^[:space:]@]+@[^[:space:]@]+$' then
+    raise exception 'A valid registered organization contact email is required';
+  end if;
+  select array_agg(o.id order by o.id) into matching_orgs
+  from public.organizations o
+  where o.status='active'
+    and lower(trim(o.contact_email))=lower(trim(participant_email));
+  if coalesce(cardinality(matching_orgs),0)<>1 then
+    raise exception 'No unique active organization matches that registered contact email';
+  end if;
+  return public.vexim_invite_review_participant(rid,matching_orgs[1],requested_role);
+end
+$$;
+
 create function public.vexim_accept_review_participant(
   participant_id uuid,
   attests_fsvp boolean default false,
@@ -582,8 +615,8 @@ grant select on public.review_participants,public.review_party_decisions to auth
 grant all on public.review_participants,public.review_party_decisions to service_role;
 revoke execute on function public.app_can_access_review(uuid),public.app_can_read_product(uuid),public.app_can_read_label_version(uuid),public.vexim_current_label_bundle_sha256(uuid),public.app_add_review_owner_participant(),public.app_review_participant_identity_guard() from public,anon,authenticated;
 grant execute on function public.app_can_access_review(uuid),public.app_can_read_product(uuid),public.app_can_read_label_version(uuid) to authenticated;
-revoke execute on function public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb) from public,anon,authenticated;
-grant execute on function public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb),public.vexim_customer_citations(),public.vexim_log_file_access(uuid,text),public.vexim_log_report_download(uuid,text) to authenticated;
-grant execute on function public.app_can_access_review(uuid),public.app_can_read_product(uuid),public.app_can_read_label_version(uuid),public.vexim_current_label_bundle_sha256(uuid),public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb),public.app_add_review_owner_participant(),public.vexim_customer_citations(),public.vexim_log_file_access(uuid,text),public.vexim_log_report_download(uuid,text) to service_role;
+revoke execute on function public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_invite_review_participant_by_email(uuid,text,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb) from public,anon,authenticated;
+grant execute on function public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_invite_review_participant_by_email(uuid,text,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb),public.vexim_customer_citations(),public.vexim_log_file_access(uuid,text),public.vexim_log_report_download(uuid,text) to authenticated;
+grant execute on function public.app_can_access_review(uuid),public.app_can_read_product(uuid),public.app_can_read_label_version(uuid),public.vexim_current_label_bundle_sha256(uuid),public.vexim_invite_review_participant(uuid,uuid,public.review_party_role),public.vexim_invite_review_participant_by_email(uuid,text,public.review_party_role),public.vexim_accept_review_participant(uuid,boolean,text),public.vexim_remove_review_participant(uuid,text),public.vexim_share_review_with_importer(uuid,text),public.vexim_record_party_decision(uuid,public.review_party_role,public.review_party_decision,text,jsonb),public.app_add_review_owner_participant(),public.vexim_customer_citations(),public.vexim_log_file_access(uuid,text),public.vexim_log_report_download(uuid,text) to service_role;
 
 commit;

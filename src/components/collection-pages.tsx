@@ -199,11 +199,15 @@ export function ReviewsPage() {
               <div>
                 <h3>{p.name}</h3>
                 <p>
-                  {
-                    app.data.organizations.find(
-                      (o) => o.id === p.organization_id,
-                    )?.name
-                  }{" "}
+                  {app.data.organizations.find(
+                    (o) => o.id === p.organization_id,
+                  )?.name ??
+                    app.data.reviewParticipants?.find(
+                      (participant) =>
+                        participant.review_id === r.id &&
+                        participant.party_role === "label_owner",
+                    )?.organization_name_snapshot ??
+                    "Doanh nghiệp chia sẻ"}{" "}
                   · Nhãn v{label?.version}
                 </p>
               </div>

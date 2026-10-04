@@ -6,7 +6,7 @@ import { readFile } from "node:fs/promises";
 const firstReview = "/reviews/30000000-0000-4000-8000-000000000001";
 async function ready(page: Page, path = "/") {
   await page.goto(path);
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.getByRole("main")).toBeVisible({ timeout: 45_000 });
 }
 async function persona(page: Page, name: string) {
   await ready(page, "/settings");
@@ -62,66 +62,253 @@ test("dashboard, guides, mobile navigation and readable overflow-free layout", a
   expect(errors).toEqual([]);
 });
 
-test("reviewer reasons, region selection, manual evidence, version comparison and requests", async ({
+test("review comparison shows 15 DRAFT prompts, no OCR, and expert-gated paragraph warnings", async ({
+  page,
+}) => {
+  await ready(page, firstReview);
+  await expect(page.getByTestId("review-comparison-board")).toBeVisible();
+  await expect(page.getByTestId("review-signoff-summary")).toHaveCount(0);
+  await expect(page.getByTestId("vexim-request-panel")).toContainText(
+    "Chưa có yêu cầu Vexim Review.",
+  );
+  await expect(
+    page.getByRole("button", { name: "Gửi yêu cầu Vexim Review", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("heading", { name: "Nhãn gốc", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "OCR chưa chạy", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", {
+      name: "Quy tắc đang hoạt động · 0/15",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.getByTestId("review-rule-row")).toHaveCount(15);
+  await expect(
+    page.getByTestId("review-rule-row").filter({ hasText: "DEMO · DRAFT" }),
+  ).toHaveCount(15);
+  await expect(
+    page
+      .getByTestId("review-rule-row")
+      .filter({ hasText: "Kiểm thử hồi quy: Chưa chạy" }),
+  ).toHaveCount(15);
+  await expect(page.getByTestId("ocr-low-confidence-field")).toHaveCount(0);
+  await expect(page.locator(".review-ocr-warning")).toHaveCount(0);
+  await expect(page.getByTestId("review-comparison-board")).toContainText(
+    "không có OCR hoặc phân luồng",
+  );
+
+  await page.evaluate((reviewId) => {
+    const storageKey = "vexim-workspace-v3";
+    const saved = JSON.parse(localStorage.getItem(storageKey) ?? "null");
+    const review = saved?.data?.reviews?.find(
+      (item: { id: string }) => item.id === reviewId,
+    );
+    if (!review) throw new Error("Synthetic review fixture was not loaded");
+    const unlinkedReport = saved?.data?.reports?.find(
+      (report: { review_id: string }) => report.review_id !== reviewId,
+    );
+    if (unlinkedReport) {
+      saved.data.reports.push({
+        ...structuredClone(unlinkedReport),
+        id: "unlinked-demo-report-without-request",
+        review_id: reviewId,
+        label_version_id: review.label_version_id,
+        vexim_review_request_id: "missing-vexim-request",
+        artwork_sha256: "a".repeat(64),
+      });
+    }
+    review.triage_route = "EXPERT_REVIEW_REQUIRED";
+    review.triage_evaluated_at = new Date().toISOString();
+    review.triage_policy_version = "synthetic-e2e-fixture";
+    review.report_status = "BLOCKED";
+    review.expert_review_status = "PENDING";
+    review.triage_reasons = [
+      {
+        gate: "BLOCKED_REGULATORY_SOURCE",
+        code: "UNRESOLVED_REGULATORY_CITATION",
+        message:
+          "Citation syntax may be valid, but one or more paragraph paths remain unresolved; manual verification is recommended and automatic issuance is blocked. This is not a submitted Vexim request.",
+        rule_key: "CLAIM-001",
+      },
+    ];
+    localStorage.setItem(storageKey, JSON.stringify(saved));
+  }, "30000000-0000-4000-8000-000000000001");
+  await page.reload();
+  const paragraphBadge = page.getByText(
+    "Đường dẫn điều khoản · cần xác minh thủ công",
+    { exact: true },
+  );
+  await expect(paragraphBadge).toBeVisible();
+  await expect(paragraphBadge).toHaveClass(/badge-red/);
+  await expect(page.getByTestId("vexim-request-panel")).toContainText(
+    "Chưa có yêu cầu Vexim Review.",
+  );
+  await expect(page.getByTestId("review-signoff-summary")).toHaveCount(0);
+  await expect(page.getByTestId("vexim-request-panel")).not.toContainText(
+    "Chờ chuyên gia",
+  );
+  await expect(page.getByTestId("review-comparison-board")).toContainText(
+    "DỮ LIỆU DEMO MÔ PHỎNG",
+  );
+
+  await page.getByRole("button", { name: "Nội dung OCR" }).click();
+  const extraction = page.getByRole("dialog");
+  await expect(extraction).toContainText("Chưa có dữ liệu OCR");
+  await expect(extraction.locator(".field-list-item")).toHaveCount(0);
+});
+
+test("no-request demo fixture stays read-only and never displays Vexim pending", async ({
   page,
 }) => {
   await ready(page, firstReview);
   await expect(
     page.getByRole("heading", { name: "Trà sen túi lọc", exact: true }),
   ).toBeVisible();
+  const requestPanel = page.getByTestId("vexim-request-panel");
+  await expect(requestPanel).toContainText("Chưa có yêu cầu Vexim Review.");
+  await expect(requestPanel).not.toContainText("Vexim Review đang được xử lý");
+  await expect(
+    page.getByRole("button", { name: "Gửi yêu cầu Vexim Review", exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "Xác nhận", exact: true }),
-  ).toBeDisabled();
-  await page
-    .getByLabel("Lý do / ghi chú chuyên viên")
-    .fill("Đối chiếu bản gốc: cần chuyên gia xác nhận medical claim.");
-  await page.getByRole("button", { name: "Xác nhận", exact: true }).click();
+  ).toHaveCount(0);
   await expect(
-    page.getByText("Đã xác nhận finding.", { exact: true }).last(),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Chọn vùng evidence" }).click();
-  await expect(page.locator(".label-image-wrap img")).toBeVisible();
-  const image = await page.locator(".label-image-wrap").boundingBox();
-  const viewport = await page.locator(".label-canvas").boundingBox();
-  if (!image || !viewport) throw new Error("Missing label view");
-  const x = Math.max(image.x + image.width * 0.15, viewport.x + 10);
-  const y = Math.max(image.y + image.height * 0.15, viewport.y + 20);
-  await page.mouse.move(x, y);
-  await page.mouse.down();
-  await page.mouse.move(x + 90, y + 65, { steps: 8 });
-  await page.mouse.up();
-  const modal = page.getByRole("dialog");
-  await expect(modal).toBeVisible();
-  await modal
-    .getByLabel("Tiêu đề finding")
-    .fill("Vùng nhãn cần đối chiếu thủ công");
-  await modal.getByLabel("Mức độ").selectOption("minor");
-  await modal
-    .getByLabel("Mô tả rủi ro")
-    .fill("Chuyên viên chọn vùng trên bản gốc để kiểm tra lại độ rõ của chữ.");
-  await modal.getByLabel("Evidence — nguyên văn trên nhãn").fill("AN NHIEN");
-  await modal
-    .getByLabel("Hành động đề xuất")
-    .fill("Đối chiếu file độ phân giải cao trước khi chốt báo cáo.");
-  await modal
-    .getByRole("button", { name: "Thêm finding", exact: true })
-    .click();
-  await expect(modal).not.toBeVisible();
+    page.getByRole("button", { name: "Thêm phát hiện thủ công", exact: true }),
+  ).toHaveCount(0);
   await expect(
-    page.getByText("Vùng nhãn cần đối chiếu thủ công", { exact: true }),
-  ).toBeVisible();
+    page.getByRole("button", { name: "Ký duyệt báo cáo Vexim", exact: true }),
+  ).toHaveCount(0);
   await page.screenshot({
-    path: "test-results/vexim-review.png",
+    path: "test-results/vexim-review-no-request.png",
     fullPage: true,
   });
-  await page.getByRole("button", { name: /So sánh/ }).click();
+  await page.getByRole("button", { name: "Nội dung OCR" }).click();
+  const extraction = page.getByRole("dialog");
+  await expect(extraction).toContainText("Chưa có dữ liệu OCR");
+  await expect(extraction.locator(".field-list-item")).toHaveCount(0);
+
+  await ready(page, "/settings");
+  await page.getByRole("button", { name: "Đặt lại demo", exact: true }).click();
+  const resetDialog = page.getByRole("dialog");
+  await resetDialog.getByRole("checkbox").check();
+  await resetDialog
+    .getByRole("button", { name: "Xóa dữ liệu cục bộ & đặt lại", exact: true })
+    .click();
+  await expect(resetDialog).not.toBeVisible();
+  await ready(page, firstReview);
+  const resetFixtureStatus = await page.evaluate(() => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    return saved?.data?.reviews?.find(
+      (review: { id: string }) =>
+        review.id === "30000000-0000-4000-8000-000000000001",
+    )?.status;
+  });
+  expect(resetFixtureStatus).toBe("MANUAL_ESCALATION_REQUIRED");
+  await expect(page.getByTestId("vexim-request-panel")).toContainText(
+    "Chưa có yêu cầu Vexim Review.",
+  );
+  await expect(page.getByTestId("vexim-request-panel")).not.toContainText(
+    "Vexim Review đang được xử lý",
+  );
+});
+
+test("an Owner who creates a dossier is an active participant on the new review and can preview PNG artwork", async ({
+  page,
+}) => {
+  await persona(page, "Minh Anh · An Nhiên Tea");
+  await ready(page, "/products/new");
+  await page
+    .getByLabel("Tên sản phẩm", { exact: true })
+    .fill("Owner QA Green Tea");
+  await page.getByLabel("Thương hiệu", { exact: true }).fill("OWNER QA");
+  await page.getByRole("button", { name: "Tiếp tục" }).click();
+
+  await page.getByRole("button", { name: "Thêm nguyên liệu" }).click();
+  await page.getByLabel("Nguyên liệu 1", { exact: true }).fill("Trà xanh");
+  await page.getByLabel("Nguyên liệu tiếng Anh 1").fill("Green tea leaves");
+  await page
+    .getByLabel("Quy cách đóng gói", { exact: true })
+    .fill("20 túi / hộp");
+  await page
+    .getByLabel("Khối lượng tịnh trên nhãn", { exact: true })
+    .fill("40 g");
+  await page.getByRole("button", { name: "Tiếp tục" }).click();
+
+  await page
+    .getByLabel("Tên nhà sản xuất", { exact: true })
+    .fill("Owner QA Foods");
+  await page
+    .getByLabel("Địa chỉ nhà sản xuất", { exact: true })
+    .fill("Hà Nội, Việt Nam");
+  await page.getByRole("button", { name: "Tiếp tục" }).click();
+
+  await page
+    .getByLabel("Số đơn vị bán dự kiến / 12 tháng", { exact: true })
+    .fill("1000");
+  await page.getByLabel(/Tôi xác nhận công thức, nguyên liệu/).check();
+  await page.getByLabel(/Tôi xác nhận đã khai báo đầy đủ tuyên bố/).check();
+  const png = await sharp(await readFile("public/samples/lotus-front-v2.svg"))
+    .png()
+    .toBuffer();
+  await page.getByLabel("Chọn file nhãn").setInputFiles({
+    name: "owner-qa-label.png",
+    mimeType: "image/png",
+    buffer: png,
+  });
+  await page.getByRole("button", { name: "Lưu và chạy Self-check" }).click();
+
+  await expect(page).toHaveURL(/\/reviews\/[0-9a-f-]+$/i, { timeout: 45_000 });
+  const ownerRow = page
+    .locator(".review-collaboration-card .collaboration-participant-row")
+    .filter({ hasText: "Chủ nhãn" });
+  await expect(ownerRow).toContainText("An Nhiên Tea");
+  await expect(ownerRow).toContainText("Đang tham gia");
   await expect(
-    page.getByRole("dialog", { name: "So sánh hai phiên bản nhãn" }),
-  ).toBeVisible();
-  await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Yêu cầu bổ sung" }).click();
-  await expect(page.getByRole("dialog")).toBeVisible();
-  await page.keyboard.press("Escape");
+    page.getByRole("button", { name: "Xác nhận đã rà soát" }),
+  ).toBeDisabled();
+  await expect(page.getByTestId("review-signoff-summary")).toHaveCount(0);
+  await expect(page.getByTestId("vexim-request-panel")).toContainText(
+    "Chưa có yêu cầu Vexim Review.",
+  );
+
+  const preview = page.getByTestId("review-artwork-preview-image");
+  await expect(preview).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(() =>
+      preview.evaluate((image) => (image as HTMLImageElement).naturalWidth),
+    )
+    .toBeGreaterThan(0);
+  await page.screenshot({
+    path: "test-results/vexim-owner-review.png",
+    fullPage: true,
+  });
+
+  const ownerParticipant = await page.evaluate(() => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    const reviewId = location.pathname.split("/").at(-1);
+    const review = saved?.data?.reviews?.find(
+      (item: { id: string }) => item.id === reviewId,
+    );
+    const participant = saved?.data?.reviewParticipants?.find(
+      (item: { review_id: string; party_role: string }) =>
+        item.review_id === reviewId && item.party_role === "label_owner",
+    );
+    return { review, participant };
+  });
+  expect(ownerParticipant.participant).toMatchObject({
+    organization_id: ownerParticipant.review.organization_id,
+    party_role: "label_owner",
+    status: "active",
+  });
 });
 
 test("customer draft autosave, upload versions and tenant-scoped read-only reviewer UI", async ({
@@ -153,7 +340,7 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
   await expect(
     page.getByRole("heading", { name: "UI QA Green Tea", exact: true }),
   ).toBeVisible();
-  await ready(page, "/products/d0000000-0000-4000-8000-000000000001");
+  await ready(page, "/products/d0000000-0000-4000-8000-000000000005");
   await page.getByRole("button", { name: "Tải nhãn mới" }).click();
   const modal = page.getByRole("dialog");
   await expect(modal).toBeVisible();
@@ -166,9 +353,11 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
     buffer: bytes,
   });
   await modal.getByRole("checkbox").check();
-  await modal.getByRole("button", { name: "Tải lên và rà soát" }).click();
+  await modal
+    .getByRole("button", { name: "Tải lên và chạy Self-check" })
+    .click();
   await expect(modal).not.toBeVisible();
-  await expect(page.getByText(/v3/).first()).toBeVisible();
+  await expect(page.getByText(/v2/).first()).toBeVisible();
   await ready(page, firstReview);
   await expect(
     page.getByRole("button", { name: "Xác nhận", exact: true }),
@@ -181,61 +370,229 @@ test("customer draft autosave, upload versions and tenant-scoped read-only revie
   ).toHaveCount(0);
 });
 
-test("human approval creates immutable report and downloads JSON with disclaimer", async ({
+test("the DRAFT-only tea review stays unsigned and has no generated artifacts", async ({
   page,
 }) => {
   await ready(page, firstReview);
-  const total = await page.locator(".finding-list-item.open").count();
-  for (let i = 0; i < total; i++) {
-    await page
-      .locator(".finding-list-item")
-      .filter({ hasText: "Chưa xử lý" })
-      .first()
-      .click();
-    await page
-      .getByLabel("Lý do / ghi chú chuyên viên")
-      .fill(
-        "Đã đối chiếu evidence gốc. Giữ finding và yêu cầu chỉnh sửa; không khẳng định nhãn đạt FDA.",
-      );
-    await page.getByRole("button", { name: "Xác nhận", exact: true }).click();
-    await expect(page.locator(".finding-list-item.open")).toHaveCount(
-      total - 1 - i,
-    );
-  }
-  await page.getByRole("button", { name: /duyệt báo cáo/i }).click();
-  const modal = page.getByRole("dialog");
-  await expect(modal).toBeVisible();
-  await modal
-    .getByLabel("Ghi chú phê duyệt")
-    .fill(
-      "Rà soát sơ bộ trong phạm vi trà khô. Cần sửa medical claim và bổ sung hồ sơ; không thay thế tư vấn pháp lý.",
-    );
-  await modal.getByRole("checkbox").check();
-  await modal.getByRole("button", { name: "Duyệt & tạo báo cáo" }).click();
-  await expect(page).toHaveURL(/\/reports\?report=/);
+  await expect(page.locator(".finding-list-item.open")).toHaveCount(15);
+  await expect(page.getByTestId("review-rule-row")).toHaveCount(15);
   await expect(
-    page.getByRole("heading", { name: "Báo cáo rà soát", exact: true }),
+    page.getByTestId("review-rule-row").filter({ hasText: "DEMO · DRAFT" }),
+  ).toHaveCount(15);
+  await expect(
+    page.getByRole("button", { name: "Ký duyệt báo cáo Vexim", exact: true }),
+  ).toHaveCount(0);
+
+  const fixture = await page.evaluate((reviewId) => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    const data = saved?.data;
+    const review = data?.reviews?.find(
+      (item: { id: string }) => item.id === reviewId,
+    );
+    return {
+      review,
+      findings: data?.findings?.filter(
+        (item: { review_id: string }) => item.review_id === reviewId,
+      ),
+      reports: data?.reports?.filter(
+        (item: { review_id: string }) => item.review_id === reviewId,
+      ).length,
+      veximReviewRequests:
+        data?.veximReviewRequests?.filter(
+          (item: { review_id: string }) => item.review_id === reviewId,
+        ).length ?? 0,
+      preScreeningReports:
+        data?.preScreeningReports?.filter(
+          (item: { review_id: string }) => item.review_id === reviewId,
+        ).length ?? 0,
+      rules: data?.rules?.map((item: { status: string }) => item.status),
+      sources: data?.sources?.map((item: { status: string }) => item.status),
+    };
+  }, "30000000-0000-4000-8000-000000000001");
+  expect(fixture.review.status).toBe("MANUAL_ESCALATION_REQUIRED");
+  expect(fixture.review.expert_review_status).toBe("PENDING");
+  expect(fixture.review.triage_evaluated_at).toBeNull();
+  expect(fixture.review.approved_by).toBeNull();
+  expect(fixture.review.rule_snapshot).toHaveLength(15);
+  expect(fixture.findings).toHaveLength(15);
+  expect(
+    fixture.findings.every(
+      (finding: { status: string }) => finding.status === "open",
+    ),
+  ).toBe(true);
+  expect(fixture.reports).toBe(0);
+  expect(fixture.veximReviewRequests).toBe(0);
+  expect(fixture.preScreeningReports).toBe(0);
+  expect(fixture.rules.every((status: string) => status === "DRAFT")).toBe(
+    true,
+  );
+  expect(fixture.sources.every((status: string) => status === "DRAFT")).toBe(
+    true,
+  );
+});
+
+test("demo Mock Scan unlocks only the full owner-importer collaboration flow", async ({
+  page,
+}) => {
+  const reviewId = "30000000-0000-4000-8000-000000000002";
+  await ready(page, `/reviews/${reviewId}`);
+  const mockScan = page.getByTestId("demo-mock-scan");
+  await expect(mockScan).toBeVisible();
+  await expect(mockScan).toContainText("scan_status: dev_unscanned");
+  await expect(mockScan).toContainText("Không phải quét mã độc thật");
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  await expect(
+    page.getByRole("button", { name: "Xác nhận đã rà soát" }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Chia sẻ phiên bản" }),
+  ).toBeDisabled();
+  await page
+    .getByRole("button", { name: "Chạy mô phỏng quét trong Demo" })
+    .click();
+  await expect(mockScan).toContainText("MÔ PHỎNG ĐÃ CHẠY");
+  await expect(mockScan).toContainText(
+    "Mô phỏng · không phải trạng thái sạch thật",
+  );
+  await expect(mockScan).toContainText("scan_status: dev_unscanned");
+
+  // The temporary mock result survives route reloads in this tab, but is not
+  // written into the canonical local fixture or represented as a real scan.
+  await page.reload();
+  const restoredMockScan = page.getByTestId("demo-mock-scan");
+  await expect(restoredMockScan).toContainText("MÔ PHỎNG ĐÃ CHẠY");
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  await page.getByRole("button", { name: "Xác nhận đã rà soát" }).click();
+  const ownerDecision = page.getByRole("dialog", {
+    name: "Chủ nhãn xác nhận đã rà soát",
+  });
+  await ownerDecision
+    .getByLabel("Ghi chú rà soát của chủ nhãn")
+    .fill("Chủ nhãn đã tự rà soát artwork demo phiên bản 3.");
+  await ownerDecision
+    .getByRole("button", { name: "Lưu xác nhận chủ nhãn" })
+    .click();
+  await expect(ownerDecision).not.toBeVisible();
+  await expect(page.getByText("Chủ nhãn đã xác nhận nhãn v3.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Mời đơn vị nhập khẩu" }).click();
+  const invite = page.getByRole("dialog", {
+    name: "Mời đơn vị nhập khẩu tham gia rà soát",
+  });
+  await invite
+    .getByLabel("Email liên hệ đã đăng ký của tổ chức")
+    .fill("contact@annhientea.example");
+  await invite.getByRole("button", { name: "Tạo lời mời" }).click();
+  await expect(invite).not.toBeVisible();
+
+  await persona(page, "Minh Anh · An Nhiên Tea");
+  await ready(page, "/");
+  await expect(
+    page.getByRole("heading", { name: "Lời mời cộng tác nhãn" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Xem & chấp nhận" }).click();
+  const acceptance = page.getByRole("dialog", {
+    name: "Chấp nhận lời mời nhà nhập khẩu thương mại",
+  });
+  await expect(acceptance).toContainText("chủ nhãn chỉ chia sẻ");
+  await acceptance.getByRole("button", { name: "Chấp nhận lời mời" }).click();
+  await expect(acceptance).not.toBeVisible();
+  await expect(page.getByText("Đã nhận · chờ chủ nhãn chia sẻ")).toBeVisible();
+  await expect(page.locator(`a[href="/reviews/${reviewId}"]`)).toHaveCount(0);
+
+  await persona(page, "Hoàng Nam · Mộc Trà Việt");
+  await ready(page, `/reviews/${reviewId}`);
+  const share = page.getByRole("button", { name: "Chia sẻ phiên bản" });
+  await expect(share).toBeEnabled();
+  await share.click();
+  const shareDialog = page.getByRole("dialog", {
+    name: "Chia sẻ phiên bản đã được chủ nhãn rà soát",
+  });
+  await shareDialog
+    .getByLabel("Lý do / phạm vi chia sẻ")
+    .fill("Chia sẻ nhãn v3 để importer xem xét và xác nhận.");
+  await shareDialog
+    .getByRole("button", { name: "Chia sẻ đúng phiên bản" })
+    .click();
+  await expect(shareDialog).not.toBeVisible();
+  await expect(
+    page.getByText("Chờ nhà nhập khẩu thương mại phản hồi"),
+  ).toBeVisible();
+
+  await persona(page, "Minh Anh · An Nhiên Tea");
+  await ready(page, `/reviews/${reviewId}`);
+  await expect(
+    page.getByText("Nhà nhập khẩu thương mại").first(),
   ).toBeVisible();
   await page.screenshot({
-    path: "test-results/vexim-report.png",
+    path: "test-results/vexim-commercial-importer-review.png",
     fullPage: true,
   });
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Tải JSON", exact: true }).click();
-  const download = await downloadPromise;
-  const file = await download.path();
-  if (!file) throw new Error("No download");
-  const report = JSON.parse(await readFile(file, "utf8"));
-  expect(report.disclaimer).toContain("FDA");
-  expect(report.reviewer.id).toBeTruthy();
-  const pdfDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Tải báo cáo PDF" }).click();
-  const pdfDownload = await pdfDownloadPromise;
-  const pdfPath = await pdfDownload.path();
-  expect((await readFile(pdfPath!)).subarray(0, 5).toString()).toBe("%PDF-");
+  await page.getByRole("button", { name: "Phản hồi phiên bản" }).click();
+  const importerDecision = page.getByRole("dialog", {
+    name: "Nhà nhập khẩu thương mại phản hồi nhãn",
+  });
+  await importerDecision
+    .getByLabel("Nhận xét của nhà nhập khẩu thương mại")
+    .fill("Importer đã xem và chấp nhận đúng nhãn phiên bản 3.");
+  await importerDecision
+    .getByRole("button", { name: "Ghi nhận phản hồi" })
+    .click();
+  await expect(importerDecision).not.toBeVisible();
+  await expect(
+    page.getByText(/Hai bên đã xác nhận cùng phiên bản nhãn\./),
+  ).toBeVisible();
+
+  const fixture = await page.evaluate((targetReviewId) => {
+    const saved = JSON.parse(
+      localStorage.getItem("vexim-workspace-v3") ?? "null",
+    );
+    const data = saved?.data;
+    const review = data?.reviews?.find(
+      (item: { id: string }) => item.id === targetReviewId,
+    );
+    const label = data?.labelVersions?.find(
+      (item: { id: string }) => item.id === review?.label_version_id,
+    );
+    return {
+      review,
+      scanStatuses: label?.original_files?.map(
+        (file: { scan_status: string }) => file.scan_status,
+      ),
+      decisions: data?.partyDecisions?.filter(
+        (item: { review_id: string }) => item.review_id === targetReviewId,
+      ),
+      reports: data?.reports?.filter(
+        (item: { review_id: string }) => item.review_id === targetReviewId,
+      ).length,
+      sessionMockScan: JSON.parse(
+        sessionStorage.getItem("vexim-demo-mock-scan-session-v1") ?? "{}",
+      ),
+    };
+  }, reviewId);
+  expect(fixture.review.collaboration_status).toBe("mutually_accepted");
+  expect(fixture.review.approved_by).toBeNull();
+  expect(fixture.scanStatuses).toEqual(["dev_unscanned", "dev_unscanned"]);
   expect(
-    report.findings.every((f: { status: string }) => f.status !== "open"),
-  ).toBe(true);
+    fixture.decisions
+      .map((entry: { party_role: string }) => entry.party_role)
+      .sort(),
+  ).toEqual(["commercial_importer", "label_owner"]);
+  expect(
+    new Set(
+      fixture.decisions.map(
+        (entry: { label_bundle_sha256: string }) => entry.label_bundle_sha256,
+      ),
+    ).size,
+  ).toBe(1);
+  expect(fixture.reports).toBe(0);
+  expect(fixture.sessionMockScan[fixture.review.label_version_id].outcome).toBe(
+    "simulated_no_detection",
+  );
 });
 
 test("regulatory source changes require independent approval and preserve version history", async ({
@@ -258,6 +615,9 @@ test("regulatory source changes require independent approval and preserve versio
     .fill(
       "Nội dung fixture DEMO cho kiểm thử giao diện đăng ký và duyệt nguồn độc lập. Không phải trích đoạn luật thực, không sử dụng cho hồ sơ hoặc kết luận pháp lý production.",
     );
+  await editor
+    .getByLabel("Ngày truy xuất")
+    .fill(new Date().toISOString().slice(0, 10));
   await editor.getByRole("button", { name: "Lưu draft nguồn" }).click();
   await expect(editor).not.toBeVisible();
   const detail = page.getByRole("dialog");

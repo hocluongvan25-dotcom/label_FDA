@@ -81,6 +81,17 @@ export function ProductDetail({ productId }: { productId: string }) {
   const org = app.data.organizations.find(
     (o) => o.id === product.organization_id,
   );
+  const organizationName =
+    org?.name ??
+    app.data.reviewParticipants?.find(
+      (participant) =>
+        participant.review_id === latest?.id &&
+        participant.party_role === "label_owner",
+    )?.organization_name_snapshot;
+  const canManageProduct =
+    can(app.actor, "products") &&
+    (!app.actor.role.startsWith("customer") ||
+      app.actor.organization_id === product.organization_id);
   const requests = app.data.requests.filter((r) =>
     reviews.some((rv) => rv.id === r.review_id),
   );
@@ -93,7 +104,10 @@ export function ProductDetail({ productId }: { productId: string }) {
       const review = await app.submitReview(label.id);
       setUploadOpen(false);
       setFiles([]);
-      app.notify("Đã gửi phiên bản nhãn để kiểm tra.");
+      app.notify(
+        "Đã lưu phiên bản nhãn và bắt đầu Self-check. Chưa tạo yêu cầu Vexim Review.",
+        "info",
+      );
       router.push(`/reviews/${review.id}`);
     } catch (e) {
       app.notify(errorMessage(e), "error");
@@ -123,19 +137,19 @@ export function ProductDetail({ productId }: { productId: string }) {
           <TeaThumbnail color={product.color} form={product.form} size="lg" />
           <div>
             <div className="eyebrow">
-              PRODUCT DOSSIER · {product.id.slice(-6).toUpperCase()}
+              HỒ SƠ SẢN PHẨM · {product.id.slice(-6).toUpperCase()}
             </div>
             <h1>{product.name}</h1>
             <div className="detail-meta">
               <span>{product.brand}</span>
               <span>·</span>
-              <span>{org?.name}</span>
+              <span>{organizationName}</span>
               <StatusBadge status={latest?.status ?? "DRAFT"} />
             </div>
           </div>
         </div>
         <div className="page-actions">
-          {can(app.actor, "products") && (
+          {canManageProduct && (
             <>
               <Link
                 href={`/products/${product.id}/edit`}
@@ -163,7 +177,7 @@ export function ProductDetail({ productId }: { productId: string }) {
           <small>{versions.length} phiên bản được giữ lại</small>
         </Card>
         <Card className="detail-metric">
-          <span>FINDINGS HIỆN TẠI</span>
+          <span>SỐ PHÁT HIỆN HIỆN TẠI</span>
           <strong>
             {counts.critical + counts.major + counts.minor + counts.information}
           </strong>
@@ -206,9 +220,9 @@ export function ProductDetail({ productId }: { productId: string }) {
                   "Chưa khai báo"}{" "}
                 đơn vị
               </dd>
-              <dt>Nhân sự FTE</dt>
+              <dt>Nhân sự tương đương toàn thời gian (FTE)</dt>
               <dd>{product.employee_fte ?? "Chưa khai báo"}</dd>
-              <dt>Exemption pre-check</dt>
+              <dt>Đề nghị đánh giá điều kiện miễn ghi nhãn dinh dưỡng</dt>
               <dd>
                 {product.exemption_requested
                   ? "Đã đề nghị chuyên gia đánh giá · chưa phải kết luận miễn"
@@ -262,13 +276,13 @@ export function ProductDetail({ productId }: { productId: string }) {
               <InlineNotice icon={<ShieldCheck size={15} />}>
                 {product.formula_confirmed
                   ? "Khách hàng đã xác nhận công thức và thứ tự khối lượng."
-                  : "Công thức chưa được xác nhận. Cần bổ sung trước khi gửi review."}
+                  : "Công thức chưa được xác nhận. Cần bổ sung trước khi chạy Self-check."}
               </InlineNotice>
             </div>
           </Card>
           <Card className="detail-section">
             <div className="card-header">
-              <h2>Claims & đơn vị chịu trách nhiệm</h2>
+              <h2>Tuyên bố trên nhãn & đơn vị chịu trách nhiệm</h2>
             </div>
             <div className="detail-tag-row">
               {product.claims.length ? (
@@ -278,7 +292,9 @@ export function ProductDetail({ productId }: { productId: string }) {
                   </Badge>
                 ))
               ) : (
-                <span className="tiny muted">Không có claim khai báo.</span>
+                <span className="tiny muted">
+                  Không có tuyên bố trên nhãn được khai báo.
+                </span>
               )}
             </div>
             <dl className="description-list" style={{ paddingTop: 0 }}>
@@ -287,7 +303,7 @@ export function ProductDetail({ productId }: { productId: string }) {
                   ["manufacturer", "Nhà sản xuất"],
                   ["packer", "Đơn vị đóng gói"],
                   ["distributor", "Nhà phân phối"],
-                  ["importer", "Importer / consignee"],
+                  ["importer", "Nhà nhập khẩu thương mại"],
                 ] as const
               ).map(([key, label]) => (
                 <div key={key} style={{ display: "contents" }}>
@@ -300,6 +316,12 @@ export function ProductDetail({ productId }: { productId: string }) {
                 </div>
               ))}
             </dl>
+            <p className="tiny muted" style={{ padding: "0 20px 16px" }}>
+              Nhà nhập khẩu thương mại không đồng nghĩa với bên nhận hàng
+              (consignee). Hồ sơ hiện không ghi nhận riêng consignee nếu khác
+              nhau; tư cách FSVP Importer được xác nhận độc lập trong luồng cộng
+              tác.
+            </p>
           </Card>
           <Card className="detail-section">
             <div className="card-header">
@@ -379,7 +401,7 @@ export function ProductDetail({ productId }: { productId: string }) {
               <StatusBadge status={latest?.status ?? "DRAFT"} />
             </div>
             <div>
-              <span>Finding nghiêm trọng</span>
+              <span>Phát hiện nghiêm trọng</span>
               <strong>{counts.critical}</strong>
             </div>
             {latest ? (
@@ -444,7 +466,7 @@ export function ProductDetail({ productId }: { productId: string }) {
                     <Link
                       href={`/reviews/${review.id}`}
                       className="row-arrow"
-                      aria-label={`Mở review nhãn v${v.version}`}
+                      aria-label={`Mở lượt rà soát nhãn v${v.version}`}
                     >
                       <ArrowRight size={14} />
                     </Link>
@@ -457,7 +479,7 @@ export function ProductDetail({ productId }: { productId: string }) {
             {!versions.length && (
               <EmptyState
                 title="Chưa có nhãn"
-                description="Tải file nhãn để bắt đầu review."
+                description="Tải file nhãn để bắt đầu Self-check."
               />
             )}
           </Card>
@@ -499,8 +521,8 @@ export function ProductDetail({ productId }: { productId: string }) {
           </Card>
           <div style={{ marginTop: 20 }}>
             <InlineNotice tone="warning">
-              Hồ sơ chỉ hỗ trợ đánh giá trong phạm vi MVP, không phải phê duyệt
-              nhãn hoặc sản phẩm của FDA.
+              Hồ sơ chỉ hỗ trợ đánh giá trong phạm vi hiện tại, không phải phê
+              duyệt nhãn hoặc sản phẩm của FDA.
             </InlineNotice>
           </div>
         </aside>
@@ -509,7 +531,7 @@ export function ProductDetail({ productId }: { productId: string }) {
         open={uploadOpen}
         onClose={() => !busy && setUploadOpen(false)}
         title={`Tải phiên bản nhãn v${(versions[0]?.version ?? 0) + 1}`}
-        description="File cũ không bị ghi đè. Review mới sẽ liên kết chính xác với phiên bản mới."
+        description="File cũ không bị ghi đè. Sau khi tải lên, hệ thống chạy Self-check trên phiên bản mới; thao tác này không gửi yêu cầu Vexim Review."
         footer={
           <>
             <Button
@@ -524,7 +546,7 @@ export function ProductDetail({ productId }: { productId: string }) {
               disabled={!files.length || !confirmed}
               loading={busy}
             >
-              Tải lên và rà soát <ArrowRight size={15} />
+              Tải lên và chạy Self-check <ArrowRight size={15} />
             </Button>
           </>
         }
@@ -532,14 +554,15 @@ export function ProductDetail({ productId }: { productId: string }) {
         <FileDropzone files={files} onChange={setFiles} disabled={busy} />
         <div style={{ marginTop: 20 }}>
           <Checkbox checked={confirmed} onChange={setConfirmed}>
-            Tôi xác nhận nhãn mới tương ứng với công thức và claim hiện tại
-            trong hồ sơ.
+            Tôi xác nhận nhãn mới tương ứng với công thức và các tuyên bố trên
+            nhãn hiện tại trong hồ sơ.
           </Checkbox>
         </div>
         <div style={{ marginTop: 18 }}>
           <InlineNotice icon={<Pencil size={16} />}>
-            Nếu công thức hoặc claim đã thay đổi, hãy sửa hồ sơ trước khi tải
-            nhãn. Hệ thống không tự đoán các thay đổi trong thiết kế.
+            Nếu công thức hoặc nội dung tuyên bố đã thay đổi, hãy sửa hồ sơ
+            trước khi tải nhãn. Hệ thống không tự đoán các thay đổi trong thiết
+            kế.
           </InlineNotice>
         </div>
       </Modal>

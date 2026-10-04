@@ -21,6 +21,7 @@ import type {
 } from "@/lib/types";
 import { downloadBlob, errorMessage } from "@/lib/utils";
 import { normalizePages } from "@/lib/files";
+import { isBundledDemoArtwork } from "@/lib/demo-artwork";
 
 export function LabelViewer({
   label,
@@ -93,12 +94,14 @@ export function LabelViewer({
     const load = async () => {
       const { file, normalized, label } = snapshotRef.current;
       if (!file) throw new Error("Không có file nhãn.");
+      const requestedFile = normalized ?? file;
       if (
         appRef.current.mode === "supabase" &&
-        (normalized ?? file).scan_status !== "clean"
+        requestedFile.scan_status !== "clean" &&
+        !isBundledDemoArtwork(requestedFile)
       )
         throw new Error(
-          "Chờ malware scan hoàn tất trước khi mở nhãn. File chưa được xác minh không được cấp quyền đọc.",
+          "Chờ malware scan hoàn tất trước khi mở nhãn. Ngoại lệ chỉ áp dụng cho hai artwork demo tĩnh đã allowlist.",
         );
       let blob = await appRef.current.getFileBlob(normalized ?? file);
       if (
@@ -181,7 +184,7 @@ export function LabelViewer({
         <div>
           <FileImage size={14} color="#97ae7b" />
           <select
-            aria-label="Chọn panel nhãn"
+            aria-label="Chọn vùng nhãn gốc"
             value={file?.id ?? ""}
             onChange={(e) => {
               setFileId(e.target.value);

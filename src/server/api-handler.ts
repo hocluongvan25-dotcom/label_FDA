@@ -28,11 +28,28 @@ import {
   rpc,
   serviceClient,
   workspace,
+  normalizeOrphanedHumanReview,
   type ServerContext,
 } from "./context";
 import { ensureReportFiles, reportSignedUrl } from "./report-files";
 
 const uuid = z.string().uuid();
+const proposedChangeSchema = z
+  .object({
+    field: z.string().trim().min(1).max(200),
+    current_value: z.string().max(5000).optional(),
+    proposed_value: z.string().trim().min(1).max(5000),
+    reason: z.string().trim().min(5).max(2000),
+  })
+  .strict();
+const partyDecisionSchema = z
+  .object({
+    party_role: z.enum(["label_owner", "commercial_importer"]),
+    decision: z.enum(["accepted", "changes_requested", "proposed_edit"]),
+    comment: z.string().trim().min(5).max(10000),
+    proposed_changes: z.array(proposedChangeSchema).max(50).default([]),
+  })
+  .strict();
 const draftSchema = z.object({
   id: uuid.optional(),
   organization_id: uuid.optional(),
@@ -372,15 +389,27 @@ export async function apiHandler(request: Request, segments: string[]) {
         "reviews",
         uuid.parse(segments[1]),
       );
-      const { data, error } = await ctx.db
-        .from("findings")
-        .select("severity,status")
-        .eq("review_id", review.id);
-      if (error) throw dbError(error);
+      const [findingsResult, veximRequestResult] = await Promise.all([
+        ctx.db
+          .from("findings")
+          .select("severity,status")
+          .eq("review_id", review.id),
+        ctx.db
+          .from("vexim_review_requests")
+          .select("review_id,organization_id,label_version_id,artwork_hash,status")
+          .eq("review_id", review.id)
+          .maybeSingle(),
+      ]);
+      if (findingsResult.error) throw dbError(findingsResult.error);
+      if (veximRequestResult.error) throw dbError(veximRequestResult.error);
+      const normalizedReview = normalizeOrphanedHumanReview(
+        review,
+        veximRequestResult.data ? [veximRequestResult.data] : [],
+      );
       result = {
-        ...review,
+        ...normalizedReview,
         review_id: review.id,
-        finding_count: (data ?? [])
+        finding_count: (findingsResult.data ?? [])
           .filter((f) => f.status !== "dismissed")
           .reduce((c, f) => ({ ...c, [f.severity]: c[f.severity] + 1 }), {
             critical: 0,
@@ -466,6 +495,25 @@ export async function apiHandler(request: Request, segments: string[]) {
       });
       result = { saved: true };
     } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "vexim-review-requests" &&
+      segments.length === 3
+    ) {
+      result = await rpc(ctx.db, "vexim_create_review_request", {
+        rid: uuid.parse(segments[1]),
+      });
+    } else if (
+      method === "POST" &&
+      segments[0] === "vexim-review-requests" &&
+      segments[2] === "start" &&
+      segments.length === 3
+    ) {
+      requireStaff(ctx, "reviewer");
+      result = await rpc(ctx.db, "vexim_start_review_request", {
+        request_id: uuid.parse(segments[1]),
+      });
+    } else if (
       method === "PATCH" &&
       segments[0] === "requests" &&
       segments.length === 2
@@ -478,6 +526,85 @@ export async function apiHandler(request: Request, segments: string[]) {
         request_id: uuid.parse(segments[1]),
       });
       result = { saved: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "participants" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({
+          organization_contact_email: z.string().trim().email().max(254),
+          party_role: z.enum(["commercial_importer", "fsvp_importer"]),
+        })
+        .strict()
+        .parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_invite_review_participant_by_email", {
+        rid: uuid.parse(segments[1]),
+        participant_email: body.organization_contact_email,
+        requested_role: body.party_role,
+      });
+    } else if (
+      method === "POST" &&
+      segments[0] === "review-participants" &&
+      segments[2] === "accept" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({
+          attests_fsvp: z.boolean().default(false),
+          attestation_note: z.string().trim().max(5000).optional(),
+        })
+        .strict()
+        .parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_accept_review_participant", {
+        participant_id: uuid.parse(segments[1]),
+        attests_fsvp: body.attests_fsvp,
+        attestation_note: body.attestation_note ?? null,
+      });
+    } else if (
+      method === "DELETE" &&
+      segments[0] === "review-participants" &&
+      segments.length === 2
+    ) {
+      const body = z
+        .object({ reason: z.string().trim().min(5).max(5000) })
+        .strict()
+        .parse(await readJson(request));
+      await rpc(ctx.db, "vexim_remove_review_participant", {
+        participant_id: uuid.parse(segments[1]),
+        reason: body.reason,
+      });
+      result = { removed: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "share" &&
+      segments.length === 3
+    ) {
+      const body = z
+        .object({ comment: z.string().trim().min(5).max(5000) })
+        .strict()
+        .parse(await readJson(request));
+      await rpc(ctx.db, "vexim_share_review_with_importer", {
+        rid: uuid.parse(segments[1]),
+        share_comment: body.comment,
+      });
+      result = { shared: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "reviews" &&
+      segments[2] === "party-decisions" &&
+      segments.length === 3
+    ) {
+      const body = partyDecisionSchema.parse(await readJson(request));
+      result = await rpc(ctx.db, "vexim_record_party_decision", {
+        rid: uuid.parse(segments[1]),
+        requested_role: body.party_role,
+        requested_decision: body.decision,
+        decision_comment: body.comment,
+        proposed_changes: body.proposed_changes,
+      });
     } else if (
       method === "POST" &&
       segments[0] === "reviews" &&
@@ -553,6 +680,7 @@ export async function apiHandler(request: Request, segments: string[]) {
       const body = approvalSchema.parse(await readJson(request));
       const report = await rpc<Report>(ctx.db, "vexim_approve_report", {
         rid: uuid.parse(segments[1]),
+        request_id: uuid.parse(body.request_id),
         comment: body.comment,
       });
       const files = await ensureReportFiles(report);

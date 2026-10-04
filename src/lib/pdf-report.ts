@@ -112,7 +112,7 @@ export async function generateReportPdf(
   }
   newPage();
   text("BÁO CÁO RÀ SOÁT NHÃN", 21, true);
-  text("Preliminary food label review", 10, false, muted);
+  text("Rà soát sơ bộ nhãn thực phẩm", 10, false, muted);
   gap(16);
   text(snapshot.product.name, 17, true);
   text(
@@ -122,7 +122,8 @@ export async function generateReportPdf(
     muted,
   );
   gap(12);
-  const result = RESULT_LABELS[snapshot.result];
+  const disposition = snapshot.disposition ?? snapshot.result;
+  const result = RESULT_LABELS[disposition];
   ensure(60);
   page.drawRectangle({
     x: M,
@@ -137,12 +138,18 @@ export async function generateReportPdf(
     result,
     11,
     true,
-    snapshot.result === "NEEDS_CORRECTION" ? rgb(0.68, 0.25, 0.16) : teal,
+    disposition === "NEEDS_CORRECTION" ? rgb(0.68, 0.25, 0.16) : teal,
     12,
+  );
+  text(
+    "Chỉ áp dụng cho phiên bản và phạm vi ghi trong báo cáo; không phải phê duyệt/chứng nhận của FDA hoặc kết luận tuân thủ toàn diện.",
+    8,
+    false,
+    muted,
   );
   gap(22);
   section("01  Thông tin hồ sơ");
-  text(`Mã review: ${snapshot.review_id}`, 9);
+  text(`Mã lượt rà soát: ${snapshot.review_id}`, 9);
   text(
     `Phiên bản nhãn: v${snapshot.label_version.version} · Tải lên ${formatDate(snapshot.label_version.uploaded_at, true)}`,
     9,
@@ -158,12 +165,12 @@ export async function generateReportPdf(
     9,
   );
   text(
-    `Claims khai báo: ${snapshot.product.claims.join("; ") || "Không có claim khai báo."}`,
+    `Tuyên bố trên nhãn đã khai báo: ${snapshot.product.claims.join("; ") || "Không có nội dung khai báo."}`,
     9,
   );
   section("02  Phạm vi và giới hạn");
   text(
-    "Trà khô đóng gói và trà túi lọc · US federal food labeling MVP. Không gồm kết luận organic certification, country-of-origin marking hoặc phê duyệt FDA.",
+    "Phạm vi hỗ trợ hiện tại: trà khô đóng gói và trà túi lọc theo quy định ghi nhãn thực phẩm liên bang Hoa Kỳ. Không kết luận về chứng nhận hữu cơ, ghi dấu xuất xứ hoặc phê duyệt của FDA.",
     9,
   );
   text(snapshot.disclaimer, 8.5, false, muted);
@@ -171,7 +178,7 @@ export async function generateReportPdf(
   section("03  Phát hiện và hành động");
   if (!snapshot.findings.length)
     text(
-      "Không có finding được ghi nhận trong snapshot đã được chuyên viên xác nhận. Không suy rộng kết quả ra ngoài phạm vi báo cáo.",
+      "Chưa ghi nhận phát hiện trong bản chụp báo cáo đã được chuyên viên xác nhận. Không suy rộng kết quả ra ngoài phạm vi báo cáo.",
       9,
     );
   const ordered = [...snapshot.findings].sort(
@@ -187,7 +194,7 @@ export async function generateReportPdf(
       true,
     );
     text(
-      `${f.rule_key} v${f.rule_version} · ${FINDING_STATUS_LABELS[f.status]} · Confidence: ${f.ai_confidence !== null ? `${Math.round(f.ai_confidence * 100)}%` : "Thủ công"}`,
+      `${f.rule_key} v${f.rule_version} · ${FINDING_STATUS_LABELS[f.status]} · Độ tin cậy: ${f.ai_confidence !== null ? `${Math.round(f.ai_confidence * 100)}%` : "Thủ công"}`,
       8,
       false,
       muted,
@@ -196,13 +203,13 @@ export async function generateReportPdf(
     text(`Hành động: ${f.suggested_action}`, 9, true);
     for (const e of f.evidence)
       text(
-        `Evidence (${e.kind === "dossier" ? "hồ sơ khách hàng" : `file ${e.file_id}, trang ${e.page}`}): “${e.text}”${e.bbox ? ` · bbox [${e.bbox.map((n) => n.toFixed(3)).join(", ")}]` : ""}`,
+        `Bằng chứng (${e.kind === "dossier" ? "hồ sơ khách hàng" : `file ${e.file_id}, trang ${e.page}`}): “${e.text}”${e.bbox ? ` · tọa độ [${e.bbox.map((n) => n.toFixed(3)).join(", ")}]` : ""}`,
         8,
         false,
         muted,
       );
     text(
-      `Nguồn: ${f.citation_ids.map((id) => snapshot.sources.find((s) => s.id === id)?.citation ?? "citation pending human review").join("; ") || "citation pending human review"}`,
+      `Nguồn: ${f.citation_ids.map((id) => snapshot.sources.find((s) => s.id === id)?.citation ?? "Chờ chuyên viên xác minh trích dẫn nguồn").join("; ") || "Chờ chuyên viên xác minh trích dẫn nguồn"}`,
       8,
       false,
       teal,
@@ -221,7 +228,7 @@ export async function generateReportPdf(
     !snapshot.customer_requests?.some((r) => r.status === "open")
   )
     text(
-      "Không có yêu cầu bổ sung đang mở trong snapshot. Kết luận chỉ áp dụng phạm vi đã nêu.",
+      "Bản ghi báo cáo không có yêu cầu bổ sung nào đang mở. Kết quả chỉ áp dụng trong phạm vi đã nêu.",
       9,
     );
   for (const info of snapshot.missing_information ?? []) text(`• ${info}`, 9);
@@ -243,20 +250,20 @@ export async function generateReportPdf(
     text(`${s.citation} · v${s.version} · ${s.status}`, 9, true);
     text(s.canonical_url, 8, false, teal);
     text(
-      `SHA-256: ${s.content_hash ?? "Chưa có snapshot"} · Hiệu lực: ${s.effective_from ?? "Chưa xác định"} — ${s.effective_to ?? "Chưa ghi nhận ngày kết thúc"}`,
+      `Mã SHA-256: ${s.content_hash ?? "Chưa có bản lưu"} · Hiệu lực: ${s.effective_from ?? "Chưa xác định"} — ${s.effective_to ?? "Chưa ghi nhận ngày kết thúc"}`,
       7,
       false,
       muted,
     );
     if (s.raw_snapshot_id) {
       text(
-        `API edition: ${s.issue_date ?? "Unknown"} · Retrieved: ${s.retrieved_at ?? "Unknown"} · Parser: ${s.parser_version ?? "Unknown"}`,
+        `Ngày ban hành: ${s.issue_date ?? "Chưa rõ"} · Thời điểm lấy dữ liệu: ${s.retrieved_at ?? "Chưa rõ"} · Phiên bản bộ phân tích: ${s.parser_version ?? "Chưa rõ"}`,
         7,
         false,
         muted,
       );
       text(
-        `Raw snapshot: ${s.raw_snapshot_id} · Raw SHA-256: ${s.raw_content_hash ?? "Unknown"}`,
+        `Mã bản lưu gốc: ${s.raw_snapshot_id} · Mã SHA-256 gốc: ${s.raw_content_hash ?? "Chưa rõ"}`,
         7,
         false,
         muted,
@@ -272,12 +279,17 @@ export async function generateReportPdf(
     }
     gap(7);
   }
-  section("06  Xác nhận của chuyên viên");
-  text(`Người rà soát: ${snapshot.reviewer.name}`, 10, true);
-  text(`Ngày duyệt: ${formatDate(snapshot.reviewer.approved_at, true)}`, 9);
-  text(`Ghi chú: ${snapshot.reviewer.comment}`, 9);
+  section("06  Ký duyệt nội bộ của chuyên viên Vexim");
+  text(`Chuyên viên rà soát: ${snapshot.reviewer.name}`, 10, true);
   text(
-    "Phê duyệt này chỉ xác nhận nội dung báo cáo của Vexim; không phải phê duyệt sản phẩm hoặc nhãn bởi FDA.",
+    `Mã người duyệt nội bộ: ${snapshot.approved_by ?? snapshot.reviewer.id}`,
+    9,
+  );
+  text(`Mã kết quả trong phạm vi: ${disposition}`, 9);
+  text(`Ngày ký duyệt: ${formatDate(snapshot.reviewer.approved_at, true)}`, 9);
+  text(`Lý do ký duyệt: ${snapshot.rationale ?? snapshot.reviewer.comment}`, 9);
+  text(
+    "Ký duyệt chỉ xác nhận nội dung báo cáo của Vexim; không phải phê duyệt/chứng nhận FDA hoặc kết luận tuân thủ toàn diện.",
     8,
     false,
     muted,
@@ -297,13 +309,16 @@ export async function generateReportPdf(
       thickness: 0.5,
       color: rgb(0.85, 0.88, 0.87),
     });
-    p.drawText("Vexim Label Review · Preliminary review, not FDA approval", {
-      x: M,
-      y: 28,
-      size: 7,
-      font: regular,
-      color: muted,
-    });
+    p.drawText(
+      "Báo cáo rà soát sơ bộ của Vexim · Không phải phê duyệt của FDA",
+      {
+        x: M,
+        y: 28,
+        size: 7,
+        font: regular,
+        color: muted,
+      },
+    );
     p.drawText(`${i + 1} / ${count}`, {
       x: W - M - 25,
       y: 28,

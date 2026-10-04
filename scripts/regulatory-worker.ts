@@ -5,6 +5,7 @@ import { serviceClient, rpc } from "../src/server/context";
 import {
   RegulatoryHttpClient,
   EcfrClient,
+  FdaGuidanceClient,
   FederalRegisterClient,
   RegulatoryApiError,
 } from "../src/server/regulatory/clients";
@@ -16,16 +17,25 @@ async function main() {
   const args = process.argv.slice(2);
   if (args.includes("--help")) {
     console.log(
-      'npm run regulatory:worker [-- --once] or --enqueue ecfr_part101|ecfr_section|ecfr_discovery|fr_monitor. Set REGULATORY_CONTACT_EMAIL. Enqueue options: --section 101.9 --term "food labeling" --start YYYY-MM-DD --end YYYY-MM-DD --force --part101-only. --schedule enqueues the daily eCFR+FDA monitors automatically; --schedule-once only queues today’s schedule.',
+      'npm run regulatory:worker [-- --once] or --enqueue ecfr_part101|ecfr_section|ecfr_discovery|fr_monitor|fda_label_claims_html|fda_food_label_guide_pdf. Set REGULATORY_WORKER_ENV=staging and REGULATORY_CONTACT_EMAIL. Enqueue options: --section 101.9 --term "food labeling" --start YYYY-MM-DD --end YYYY-MM-DD --force --part101-only. --schedule enqueues only the configured daily eCFR/Federal Register monitors.',
     );
     return;
   }
+  if (
+    process.env.REGULATORY_WORKER_ENV !== "staging" ||
+    process.env.VERCEL_ENV === "production" ||
+    process.env.DEPLOYMENT_ENV === "production"
+  )
+    throw new Error(
+      "Refusing to start: the regulatory worker is staging-only. Set REGULATORY_WORKER_ENV=staging in an isolated staging runtime; production runtimes are blocked.",
+    );
   const contact = process.env.REGULATORY_CONTACT_EMAIL ?? "";
   const db = serviceClient();
   const repo = new SupabaseRegulatoryRepository(db);
   const http = new RegulatoryHttpClient({ contact, store: repo, attempts: 1 });
   const ecfr = new EcfrClient(http);
   const fr = new FederalRegisterClient(http);
+  const fda = new FdaGuidanceClient(http);
   const worker = `regulatory:${hostname()}:${randomUUID()}`;
   const value = (flag: string) => args[args.indexOf(flag) + 1];
   if (args.includes("--schedule-once")) {
@@ -111,6 +121,7 @@ async function main() {
           repo,
           ecfr,
           fr,
+          fda,
         );
         if (lost) throw new Error("Regulatory job lease lost");
         await rpc(db, "vexim_finish_regulatory_ingestion", {
@@ -118,7 +129,25 @@ async function main() {
           worker_id: worker,
           outcome: result,
         });
-        console.log("Regulatory job completed", job.id, result.status);
+        console.log(
+          "Regulatory job completed",
+          JSON.stringify({
+            job_id: job.id,
+            status: result.status ?? null,
+            snapshot_id: result.snapshot_id ?? null,
+            issue_date: result.issue_date ?? null,
+            raw_hash: result.raw_hash ?? result.content_hash ?? null,
+            parser_version: result.parser_version ?? null,
+            chunk_count: result.chunk_count ?? null,
+            section_count: result.section_count ?? null,
+            coverage_complete: result.coverage_complete ?? null,
+            coverage_ratio: result.coverage_ratio ?? null,
+            effective_date_unknown: result.effective_date_unknown ?? null,
+            source_status: result.source_status ?? null,
+            snapshot_status: result.snapshot_status ?? null,
+            rag_eligible: result.rag_eligible ?? null,
+          }),
+        );
       } catch (error) {
         const e =
           error instanceof RegulatoryApiError

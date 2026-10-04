@@ -13,6 +13,185 @@ import type {
 } from "./types";
 import { DEMO_ACTOR, DISCLAIMER, DISCLAIMER_EN } from "./constants";
 import { RULE_CATALOG, SOURCE_CATALOG } from "./regulatory";
+import {
+  DEMO_REVIEW_CASE_REFERENCE,
+  DEMO_REVIEW_ID,
+  isSyntheticDemoReview,
+} from "./demo-review";
+
+const DEMO_RULE_COPY: Record<
+  string,
+  { name: string; suggested_action: string }
+> = {
+  "IDENTITY-001": {
+    name: "Tên gọi thực phẩm trên nhãn",
+    suggested_action:
+      "Bổ sung hoặc xác minh tên gọi thực phẩm (statement of identity) ở mặt chính của nhãn.",
+  },
+  "NETQTY-001": {
+    name: "Khối lượng tịnh",
+    suggested_action:
+      "Bổ sung khối lượng tịnh; chuyên viên đối chiếu cách thể hiện và đơn vị đo.",
+  },
+  "INGREDIENT-001": {
+    name: "Danh sách nguyên liệu",
+    suggested_action:
+      "Bổ sung danh sách nguyên liệu bằng tiếng Anh và xác nhận thứ tự theo khối lượng.",
+  },
+  "NUTRITION-001": {
+    name: "Bảng thông tin dinh dưỡng (Nutrition Facts) và hồ sơ miễn trừ",
+    suggested_action:
+      "Cung cấp bảng thông tin dinh dưỡng (Nutrition Facts) hoặc hồ sơ để chuyên viên xác định điều kiện miễn trừ; kiểm tra sơ bộ không phải kết luận miễn.",
+  },
+  "NUTRITION-002": {
+    name: "Tuyên bố về hàm lượng dinh dưỡng khi đề nghị miễn trừ",
+    suggested_action:
+      "Không dựa vào miễn trừ trước khi chuyên viên đánh giá ảnh hưởng của tuyên bố về hàm lượng dinh dưỡng.",
+  },
+  "ALLERGEN-001": {
+    name: "Khai báo các dị nguyên chính",
+    suggested_action:
+      "Đối chiếu công thức và nguồn dị nguyên; bổ sung khai báo sau khi chuyên viên xác nhận.",
+  },
+  "ALLERGEN-002": {
+    name: "Khai báo mè / vừng (sesame)",
+    suggested_action:
+      "Xác minh mè / vừng (sesame) trong công thức và khai báo bằng tên tiếng Anh phù hợp.",
+  },
+  "CLAIM-001": {
+    name: "Tuyên bố liên quan bệnh lý hoặc điều trị",
+    suggested_action:
+      "Chuyển chuyên gia phân loại tuyên bố liên quan bệnh lý; không kết luận vi phạm hoặc yêu cầu sửa chỉ từ tín hiệu từ khóa.",
+  },
+  "CLAIM-002": {
+    name: "Tuyên bố về hàm lượng dinh dưỡng",
+    suggested_action:
+      "Cung cấp dữ liệu dinh dưỡng và căn cứ của tuyên bố để chuyên viên đối chiếu tiêu chí áp dụng.",
+  },
+  "CLAIM-003": {
+    name: "Tuyên bố tự nhiên, hữu cơ (organic) hoặc không biến đổi gen (non-GMO)",
+    suggested_action:
+      "Cung cấp chứng nhận hoặc hồ sơ chứng minh; không tự kết luận tính hợp lệ của tuyên bố hữu cơ.",
+  },
+  "FORMULA-001": {
+    name: "Đối chiếu công thức với nhãn",
+    suggested_action:
+      "Đối chiếu tên nguyên liệu, thành phần và thứ tự; xác nhận phiên bản công thức dùng cho nhãn.",
+  },
+  "LABEL-001": {
+    name: "Độ rõ của nhãn và độ tin cậy OCR",
+    suggested_action:
+      "Tải file nhãn rõ hơn hoặc xác minh thủ công các vùng có độ tin cậy nhận dạng chữ thấp.",
+  },
+  "LABEL-002": {
+    name: "Thông tin bắt buộc bằng tiếng Anh",
+    suggested_action:
+      "Bổ sung hoặc xác minh thông tin bắt buộc bằng tiếng Anh; kiểm tra bố cục song ngữ.",
+  },
+  "PARTY-001": {
+    name: "Tên, địa chỉ và vai trò đơn vị chịu trách nhiệm",
+    suggested_action:
+      "Bổ sung tên, địa chỉ và quan hệ của nhà sản xuất / đơn vị đóng gói / đơn vị phân phối trên nhãn.",
+  },
+  "CLASS-001": {
+    name: "Phân loại và phạm vi sản phẩm",
+    suggested_action:
+      "Chuyển chuyên gia xác định phân loại. Sản phẩm ngoài trà khô và trà túi lọc không được tự động kết luận.",
+  },
+};
+
+const DRAFT_REVIEW_PROMPTS = [
+  {
+    sequence_no: 1,
+    rule_key: "IDENTITY-001",
+    task: "Đối chiếu vị trí và cách trình bày tên gọi thực phẩm trên nhãn được cung cấp.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 2,
+    rule_key: "NETQTY-001",
+    task: "Đối chiếu cách ghi khối lượng tịnh, đơn vị đo và vị trí thể hiện trên nhãn được cung cấp.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 3,
+    rule_key: "INGREDIENT-001",
+    task: "So sánh danh sách nguyên liệu trên nhãn với công thức sản phẩm mẫu.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 4,
+    rule_key: "NUTRITION-001",
+    task: "Rà soát cách trình bày thông tin dinh dưỡng và xác định hồ sơ hỗ trợ nào cần bổ sung.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 5,
+    rule_key: "NUTRITION-002",
+    task: "Rà soát yêu cầu miễn trừ đối chiếu với các tuyên bố dinh dưỡng và nguồn DRAFT có liên quan.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 6,
+    rule_key: "ALLERGEN-001",
+    task: "Đối chiếu toàn bộ công thức và nhãn về thông tin dị nguyên quan trọng; không suy đoán kết quả chỉ từ gợi ý này.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 7,
+    rule_key: "ALLERGEN-002",
+    task: "Đối chiếu nguyên liệu có mè, biện pháp kiểm soát và thông tin khai báo cần thiết.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 8,
+    rule_key: "CLAIM-001",
+    task: "Chỉ phân loại nội dung đề cập điều trị bệnh sau khi chuyên gia rà soát nhãn và nguồn có thẩm quyền hiện hành.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 9,
+    rule_key: "CLAIM-002",
+    task: "Kiểm tra tuyên bố về hàm lượng dinh dưỡng trên nhãn và xác định hồ sơ chứng minh cần thiết.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 10,
+    rule_key: "CLAIM-003",
+    task: "Rà soát tuyên bố tự nhiên, hữu cơ hoặc không biến đổi gen; yêu cầu hồ sơ chứng minh nếu cần.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 11,
+    rule_key: "FORMULA-001",
+    task: "So sánh công thức sản phẩm mẫu do khách hàng cung cấp với danh sách nguyên liệu trên nhãn.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 12,
+    rule_key: "LABEL-001",
+    task: "Kiểm tra độ rõ của nhãn và xác định vùng nào cần tệp sản xuất có chất lượng cao hơn.",
+    artwork_side: "front",
+  },
+  {
+    sequence_no: 13,
+    rule_key: "LABEL-002",
+    task: "Đối chiếu riêng các thông tin bắt buộc bằng tiếng Anh và cách bố trí song ngữ.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 14,
+    rule_key: "PARTY-001",
+    task: "Đối chiếu tên, địa chỉ và vai trò của đơn vị chịu trách nhiệm với hồ sơ doanh nghiệp đã xác nhận.",
+    artwork_side: "back",
+  },
+  {
+    sequence_no: 15,
+    rule_key: "CLASS-001",
+    task: "Xác nhận phân loại sản phẩm và phạm vi rà soát với chuyên gia trước khi áp dụng quy tắc.",
+    artwork_side: "front",
+  },
+] as const;
 
 const id = (prefix: string, n: number) =>
   `${prefix}0000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -121,10 +300,12 @@ export function sampleFields(files: LabelFile[]): ExtractedField[] {
       file_id: file.id,
       page: 1,
       bbox,
-      text: value ?? "Không phát hiện Nutrition Facts trên các panel đã đọc.",
+      text:
+        value ??
+        "Không phát hiện bảng thông tin dinh dưỡng (Nutrition Facts) trên các vùng nhãn đã đọc.",
       kind: value ? "observed" : "absence",
     },
-    extraction_model: "demo-fixture · không phải kết quả OCR thực",
+    extraction_model: "Dữ liệu mẫu · không phải kết quả OCR thực",
     extracted_at: date(0, 2),
   }));
 }
@@ -146,30 +327,39 @@ export function createSeedData(): AppData {
   }));
   const sources = SOURCE_CATALOG.map((s) => ({
     ...s,
-    status: "CURRENT" as const,
-    content_excerpt: `BẢN MẪU MINH HỌA — ${s.citation}. Đây không phải bản chụp văn bản pháp lý; cần truy xuất và được chuyên gia Vexim phê duyệt trước khi dùng cho dữ liệu thật.`,
-    content_hash: "d".repeat(64),
-    retrieved_at: date(3),
-    approved_by: "demo-regulatory",
-    approved_at: date(2),
+    status: "DRAFT" as const,
+    content_excerpt: `BẢN MẪU MINH HỌA — ${s.citation}. Metadata này chưa được xác minh hoặc phê duyệt; cần chuyên gia rà soát độc lập trước khi dùng.`,
+    content_hash: null,
+    retrieved_at: null,
+    approved_by: null,
+    approved_at: null,
     updated_at: date(2),
   }));
-  const rules = RULE_CATALOG.map((r) => ({
-    ...r,
-    status: "ACTIVE" as const,
-    test_status: "passed" as const,
-    approved_by: "demo-regulatory",
-    created_by: "demo-author",
-    effective_from: "2026-01-01",
-    updated_at: date(2),
-    source_snapshot: r.source_citations
-      .map((id) => sources.find((s) => s.id === id)!)
-      .map((s) => ({
-        id: s.id,
-        version: s.version,
-        content_hash: s.content_hash,
-      })),
-  }));
+  const rules = RULE_CATALOG.map((r) => {
+    const demoCopy = DEMO_RULE_COPY[r.rule_key];
+    return {
+      ...r,
+      name: demoCopy?.name ?? r.name,
+      action_json: {
+        ...r.action_json,
+        suggested_action:
+          demoCopy?.suggested_action ?? r.action_json.suggested_action,
+      },
+      status: "DRAFT" as const,
+      test_status: "pending" as const,
+      approved_by: null,
+      created_by: "demo-author",
+      effective_from: null,
+      updated_at: date(2),
+      source_snapshot: r.source_citations
+        .map((id) => sources.find((s) => s.id === id)!)
+        .map((s) => ({
+          id: s.id,
+          version: s.version,
+          content_hash: s.content_hash,
+        })),
+    };
+  });
   const productDefs: [string, string, number, ReviewStatus, string][] = [
     ["Trà sen túi lọc", "AN NHIÊN", 0, "HUMAN_REVIEW", "sage"],
     ["Trà lài cao cấp", "MỘC TRÀ", 1, "REVISION_REQUIRED", "cream"],
@@ -235,8 +425,8 @@ export function createSeedData(): AppData {
     importer: { ...party },
     certifications: [],
     exemption_requested: true,
-    formula_confirmed: true,
-    claims_confirmed: true,
+    formula_confirmed: i !== 0,
+    claims_confirmed: i !== 0,
     assigned_to: DEMO_ACTOR.id,
     created_by: "demo-customer",
     created_at: date(i + 5),
@@ -280,6 +470,24 @@ export function createSeedData(): AppData {
         preview_url: "/samples/lotus-back-v2.svg",
       },
     ];
+    if (i === 0) {
+      Object.assign(files[0], {
+        name: "lotus-front-v2.svg",
+        size: 3130,
+        storage_path: "demo-static/lotus-front-v2.svg",
+        sha256:
+          "f59f85ab26e113c50d1524ea8ddb7ec78b380672bd7d921a115c5b9719793177",
+        preview_url: "/samples/lotus-front-v2.svg",
+      });
+      Object.assign(files[1], {
+        name: "lotus-back-v2.svg",
+        size: 2253,
+        storage_path: "demo-static/lotus-back-v2.svg",
+        sha256:
+          "ae6821bb45d6bca1a3d241a9eab5947cba3b76d7b861c50da0199112f8f8fa02",
+        preview_url: "/samples/lotus-back-v2.svg",
+      });
+    }
     const version: LabelVersion = {
       id: id("2", i + 1),
       organization_id: p.organization_id,
@@ -295,9 +503,9 @@ export function createSeedData(): AppData {
             : "under_review",
       uploaded_by: "demo-customer",
       uploaded_at: date(Math.floor(i / 3), 3),
-      extracted_fields: sampleFields(files),
+      extracted_fields: i === 0 ? [] : sampleFields(files),
     };
-    if ([1, 3, 7, 10, 11].includes(i))
+    if (i !== 0 && [1, 3, 7, 10, 11].includes(i))
       version.extracted_fields = version.extracted_fields.filter(
         (f) => f.field !== "claim",
       );
@@ -309,32 +517,47 @@ export function createSeedData(): AppData {
       label_version_id: version.id,
       review_scope: "us_federal_food_labeling_mvp",
       status: statuses,
+      collaboration_status: "not_shared",
       progress: statuses === "PROCESSING" ? 65 : 100,
       assigned_to: DEMO_ACTOR.id,
       created_at: date(Math.floor(i / 3), 3),
       updated_at: p.updated_at,
-      due_at: new Date(Date.now() + (i % 3) * 86400000).toISOString(),
-      pipeline: [
-        "validation",
-        "ocr",
-        "extraction",
-        "rules",
-        "verification",
-      ].map((stage, j) => ({
-        stage: stage as Review["pipeline"][number]["stage"],
-        status: statuses === "PROCESSING" && j > 1 ? "pending" : "complete",
-        attempts: 1,
-        message: "Dữ liệu pipeline minh họa",
-        completed_at: date(Math.floor(i / 3), 2),
-      })),
+      due_at:
+        i === 0
+          ? new Date(Date.now() + 14 * 86400000).toISOString()
+          : new Date(Date.now() + (i % 3) * 86400000).toISOString(),
+      pipeline:
+        i === 0
+          ? []
+          : ["validation", "ocr", "extraction", "rules", "verification"].map(
+              (stage, j) => ({
+                stage: stage as Review["pipeline"][number]["stage"],
+                status:
+                  statuses === "PROCESSING" && j > 1 ? "pending" : "complete",
+                attempts: 1,
+                message: "Dữ liệu pipeline minh họa",
+                completed_at: date(Math.floor(i / 3), 2),
+              }),
+            ),
       error_message: null,
-      idempotency_key: `seed-${i}`,
+      idempotency_key: i === 0 ? DEMO_REVIEW_CASE_REFERENCE : `seed-${i}`,
       approved_by: statuses === "COMPLETED" ? DEMO_ACTOR.id : null,
       approved_at: statuses === "COMPLETED" ? date(Math.floor(i / 3), 1) : null,
       approval_comment:
         statuses === "COMPLETED"
           ? "Báo cáo mẫu đã được xác nhận để minh họa giao diện."
           : null,
+      ...(i === 0
+        ? {
+            triage_route: "EXPERT_REVIEW_REQUIRED" as const,
+            overall_result: "NOT_ASSESSED" as const,
+            report_status: "NOT_ISSUED" as const,
+            expert_review_status: "PENDING" as const,
+            triage_reasons: [],
+            triage_risk_score: 0,
+            triage_evaluated_at: null,
+          }
+        : {}),
       dossier_snapshot: structuredClone(p),
       rule_snapshot: rules.map((rule) => ({
         rule_key: rule.rule_key,
@@ -347,7 +570,14 @@ export function createSeedData(): AppData {
             content_hash: s.content_hash,
           })),
       })),
-      missing_information: [],
+      missing_information:
+        i === 0
+          ? [
+              "DỮ LIỆU DEMO: hồ sơ mẫu tổng hợp; không có tác vụ OCR hoặc quyết định pháp lý nào được thực hiện.",
+              "Đối chiếu độc lập toàn bộ 15 bộ quy tắc trà đang ở DRAFT và dữ liệu nguồn DRAFT trước khi ghi nhận quyết định xử lý.",
+              "Nhờ chuyên gia xác nhận công thức, các tuyên bố trên nhãn, nội dung nhãn, phân loại sản phẩm và mọi yêu cầu miễn trừ ghi nhãn dinh dưỡng.",
+            ]
+          : [],
     };
     reviews.push(review);
     const add = (
@@ -400,39 +630,46 @@ export function createSeedData(): AppData {
       });
     };
     if (i === 0) {
-      add(
-        "CLAIM-001",
-        "Claim có dấu hiệu liên quan bệnh lý",
-        "Nhãn có nội dung “Naturally helps prevent diabetes”. Claim có dấu hiệu ngăn ngừa bệnh; bắt buộc chuyên gia xác nhận phân loại và yêu cầu sửa trước khi phát hành.",
-        "critical",
-        "claim",
-      );
-      add(
-        "NUTRITION-001",
-        "Chưa phát hiện Nutrition Facts",
-        "Nutrition Facts chưa được phát hiện. Khách hàng đề nghị low-volume exemption nhưng chưa có đánh giá của chuyên gia; không tự động kết luận đủ điều kiện miễn.",
-        "major",
-        "nutrition_facts",
-      );
-      add(
-        "PARTY-001",
-        "Thiếu địa chỉ đơn vị phân phối",
-        "Đọc được “Distributed by AN NHIEN” nhưng chưa tìm được địa chỉ đơn vị chịu trách nhiệm trên information panel.",
-        "major",
-        "responsible_party",
-      );
-      add(
-        "LABEL-001",
-        "Hướng dẫn bảo quản cần xác minh",
-        "Độ tin cậy đọc vùng hướng dẫn bảo quản là 69%. Đối chiếu file gốc hoặc yêu cầu bản nhãn rõ hơn.",
-        "minor",
-        "storage_instruction",
-      );
+      for (const prompt of DRAFT_REVIEW_PROMPTS) {
+        const rule = rules.find((r) => r.rule_key === prompt.rule_key)!;
+        const file = prompt.artwork_side === "front" ? files[0] : files[1];
+        findings.push({
+          id: id("4", 1000 + prompt.sequence_no),
+          review_id: review.id,
+          organization_id: p.organization_id,
+          rule_key: rule.rule_key,
+          rule_version: rule.version,
+          severity: rule.action_json.severity,
+          status: "open",
+          title: `[DEMO · DRAFT] ${rule.name}`,
+          description: `${prompt.task} Đây là gợi ý tổng hợp để chuyên viên rà soát, không phải kết luận pháp lý. Quy tắc và trích dẫn vẫn ở trạng thái DRAFT; chưa có kết quả OCR hoặc kết luận tuân thủ.`,
+          evidence: [
+            {
+              file_id: file.id,
+              page: 1,
+              bbox: null,
+              text: `[DỮ LIỆU MẪU · CHƯA CHẠY OCR] ${prompt.task} Chuyên viên cần đối chiếu trực tiếp hình nhãn tĩnh được liên kết.`,
+              kind: "dossier",
+            },
+          ],
+          citation_ids: rule.source_citations,
+          citation_pending: true,
+          suggested_action: `GỢI Ý QUY TẮC DRAFT — chưa được phê duyệt để áp dụng: ${rule.action_json.suggested_action}`,
+          ai_confidence: null,
+          reasoning_category: (rule.condition_json.type ??
+            "manual") as Finding["reasoning_category"],
+          human_review_required: true,
+          reviewer_comment: null,
+          reviewed_by: null,
+          reviewed_at: null,
+          created_at: review.created_at,
+        });
+      }
     } else if ([1, 5, 10].includes(i)) {
       add(
         "NUTRITION-001",
-        "Nutrition Facts cần bổ sung hoặc xác minh exemption",
-        "Chưa có Nutrition Facts hoặc hồ sơ đủ để chuyên gia xác định điều kiện miễn.",
+        "Bảng thông tin dinh dưỡng (Nutrition Facts) cần được đối chiếu",
+        "Chưa có bảng thông tin dinh dưỡng hoặc hồ sơ đủ để chuyên gia xác định có được miễn trừ hay không.",
         "major",
         "nutrition_facts",
         [1, 10].includes(i),
@@ -448,23 +685,23 @@ export function createSeedData(): AppData {
     } else if (i === 6) {
       add(
         "CLAIM-003",
-        "Organic claim chưa có hồ sơ chứng nhận",
-        "Claim organic đã được khai báo trong hồ sơ. Cần bổ sung organic certificate và chuyển chuyên gia; hệ thống không kết luận chứng nhận.",
+        "Tuyên bố hữu cơ chưa có hồ sơ chứng nhận",
+        "Hồ sơ có tuyên bố hữu cơ. Cần bổ sung chứng nhận hữu cơ và chuyển chuyên gia; hệ thống không tự kết luận về chứng nhận.",
         "critical",
         "claim",
       );
     } else if (i === 9) {
       add(
         "ALLERGEN-002",
-        "Sesame trong công thức chưa thấy trên nhãn",
-        "Công thức khai báo 10% sesame seeds. Danh sách trên nhãn mẫu chỉ gồm green tea leaves và lotus flower; cần đối chiếu ngay.",
+        "Chưa thấy mè (sesame) trong công thức trên nhãn",
+        "Công thức mẫu khai báo 10% hạt mè. Danh sách trên nhãn mẫu chỉ ghi lá trà xanh và hoa sen; cần đối chiếu.",
         "critical",
         "ingredient_list",
       );
       add(
         "FORMULA-001",
-        "Công thức và ingredient list chưa khớp",
-        "Nguyên liệu sesame seeds trong hồ sơ chưa được tìm thấy trên nhãn đã đọc.",
+        "Công thức và danh sách nguyên liệu chưa khớp",
+        "Chưa tìm thấy hạt mè trong công thức trên nhãn đã đọc.",
         "major",
         "ingredient_list",
       );
@@ -503,11 +740,14 @@ export function createSeedData(): AppData {
         pdf_path: null,
         json_path: null,
         snapshot: {
-          schema_version: "1.0",
+          schema_version: "1.1",
           review_id: r.id,
           product: structuredClone(product),
           label_version: structuredClone(label),
           review_scope: r.review_scope,
+          disposition: "NO_ISSUE_DETECTED_IN_SCOPE",
+          approved_by: DEMO_ACTOR.id,
+          rationale: r.approval_comment!,
           result: "NO_ISSUE_DETECTED_IN_SCOPE",
           disclaimer: `${DISCLAIMER}\n\n${DISCLAIMER_EN}`,
           findings: [],
@@ -543,6 +783,25 @@ export function createSeedData(): AppData {
     sources,
     rules,
     reports,
+    reviewParticipants: reviews.map((review, i) => ({
+      id: id("9", i + 1),
+      review_id: review.id,
+      organization_id: review.organization_id,
+      organization_name_snapshot:
+        organizations.find((org) => org.id === review.organization_id)?.name ??
+        "Doanh nghiệp demo",
+      party_role: "label_owner" as const,
+      status: "active" as const,
+      invited_by: "demo-customer-admin",
+      invited_at: review.created_at,
+      activated_by: "demo-customer-admin",
+      activated_at: review.created_at,
+      fsvp_attested_by: null,
+      fsvp_attested_at: null,
+      fsvp_attestation_note: null,
+      created_at: review.created_at,
+    })),
+    partyDecisions: [],
     members: organizations.map((o, i) => ({
       id: id("6", i + 1),
       organization_id: o.id,
@@ -551,14 +810,18 @@ export function createSeedData(): AppData {
       role: "customer_admin",
       status: "active",
     })),
+    veximReviewRequests: [],
     requests: [
       {
         id: id("7", 1),
         review_id: reviews.find((r) => r.product_id === products[4].id)!.id,
         organization_id: organizations[0].id,
         message:
-          "Vui lòng bổ sung công thức chi tiết và hồ sơ claim của trà gừng để chuyên viên tiếp tục rà soát.",
-        requested_documents: ["Công thức xác nhận", "Claim substantiation"],
+          "Vui lòng bổ sung công thức chi tiết và hồ sơ chứng minh các tuyên bố trên nhãn của trà gừng để chuyên viên tiếp tục rà soát.",
+        requested_documents: [
+          "Công thức xác nhận",
+          "Hồ sơ chứng minh tuyên bố trên nhãn",
+        ],
         status: "open",
         created_by: DEMO_ACTOR.id,
         created_at: date(1),
@@ -584,8 +847,12 @@ export function createSeedData(): AppData {
       [
         "finding.updated",
         "finding",
-        findings[4]?.id ?? "",
-        "Xác nhận finding Nutrition Facts · Trà lài cao cấp",
+        findings.find(
+          (finding) =>
+            finding.review_id === reviews[1].id &&
+            finding.rule_key === "NUTRITION-001",
+        )?.id ?? "",
+        "Xác nhận phát hiện về bảng thông tin dinh dưỡng · Trà lài cao cấp",
         0,
         4,
       ],
@@ -593,7 +860,7 @@ export function createSeedData(): AppData {
         "report.approved",
         "report",
         reports[0].id,
-        "Phê duyệt báo cáo mẫu · Trà ô long Đà Lạt",
+        "Ký duyệt nội bộ báo cáo mẫu · Trà ô long Đà Lạt",
         1,
         1,
       ],
@@ -606,18 +873,18 @@ export function createSeedData(): AppData {
         3,
       ],
       [
-        "source.approved",
+        "source.draft",
         "source",
         sources[0].id,
-        "Dữ liệu mẫu: xác nhận nguồn 21 CFR 101.3",
+        "Metadata nguồn 21 CFR 101.3 ở trạng thái DRAFT, chờ chuyên gia xác minh.",
         2,
         1,
       ],
       [
-        "rule.approved",
+        "rule.draft",
         "rule",
         rules[0].id,
-        "Dữ liệu mẫu: kích hoạt bộ 15 quy tắc v1",
+        "Bộ gồm 15 quy tắc đang ở DRAFT, chờ chuyên gia rà soát độc lập.",
         2,
         2,
       ],
@@ -638,5 +905,166 @@ export function createSeedData(): AppData {
       metadata: { demo: true },
       created_at: date(Number(a[4]), Number(a[5])),
     })),
+  };
+}
+
+/** Refresh only the reserved local tea-review fixture, preserving other demo workspace records. */
+export function refreshDraftOnlyDemoFixture(
+  data: AppData,
+  seeded: AppData,
+): AppData {
+  const fixtureReview = seeded.reviews.find(
+    (review) => review.id === DEMO_REVIEW_ID,
+  );
+  const previousReview = data.reviews.find(
+    (review) => review.id === DEMO_REVIEW_ID,
+  );
+  const fixtureProduct = seeded.products.find(
+    (product) => product.id === fixtureReview?.product_id,
+  );
+  const fixtureLabel = seeded.labelVersions.find(
+    (label) => label.id === fixtureReview?.label_version_id,
+  );
+  if (
+    !fixtureReview ||
+    !previousReview ||
+    !isSyntheticDemoReview(previousReview) ||
+    !fixtureProduct ||
+    !fixtureLabel
+  )
+    return data;
+
+  const fixtureFindings = seeded.findings.filter(
+    (finding) => finding.review_id === DEMO_REVIEW_ID,
+  );
+  const previousFindings = data.findings.filter(
+    (finding) => finding.review_id === DEMO_REVIEW_ID,
+  );
+  const previousReports = data.reports.filter(
+    (report) => report.review_id === DEMO_REVIEW_ID,
+  );
+  const previousPreScreeningReports = (data.preScreeningReports ?? []).filter(
+    (report) => report.review_id === DEMO_REVIEW_ID,
+  );
+  const ruleKeys = new Set(seeded.rules.map((rule) => rule.rule_key));
+  const fixtureRuleIds = new Set(seeded.rules.map((rule) => rule.id));
+  const sourceIds = new Set(
+    seeded.rules.flatMap((rule) => rule.source_citations),
+  );
+  const replaceById = <T extends { id: string }>(
+    values: T[],
+    replacement: T,
+  ): T[] => {
+    let replaced = false;
+    const next = values.map((value) => {
+      if (value.id !== replacement.id) return value;
+      replaced = true;
+      return replacement;
+    });
+    return replaced ? next : [...next, replacement];
+  };
+  const fixtureAudit = seeded.audit.filter(
+    (entry) =>
+      (entry.entity_type === "review" && entry.entity_id === DEMO_REVIEW_ID) ||
+      (entry.entity_type === "product" &&
+        entry.entity_id === fixtureProduct.id) ||
+      (entry.entity_type === "label_version" &&
+        entry.entity_id === fixtureLabel.id) ||
+      (entry.entity_type === "source" &&
+        sourceIds.has(entry.entity_id) &&
+        entry.action === "source.draft") ||
+      (entry.entity_type === "rule" &&
+        fixtureRuleIds.has(entry.entity_id) &&
+        entry.action === "rule.draft"),
+  );
+  const retiredAuditIds = new Set([
+    DEMO_REVIEW_ID,
+    fixtureProduct.id,
+    previousReview.product_id,
+    fixtureLabel.id,
+    previousReview.label_version_id,
+    ...fixtureFindings.map((finding) => finding.id),
+    ...previousFindings.map((finding) => finding.id),
+    ...previousReports.map((report) => report.id),
+    ...previousPreScreeningReports.map((report) => report.id),
+    ...fixtureLabel.original_files.map((file) => file.id),
+    ...(data.labelVersions
+      .find((label) => label.id === previousReview.label_version_id)
+      ?.original_files.map((file) => file.id) ?? []),
+  ]);
+
+  return {
+    ...data,
+    products: replaceById(data.products, fixtureProduct),
+    labelVersions: replaceById(data.labelVersions, fixtureLabel),
+    reviews: replaceById(data.reviews, fixtureReview),
+    reviewParticipants: [
+      ...(data.reviewParticipants ?? []).filter(
+        (participant) => participant.review_id !== DEMO_REVIEW_ID,
+      ),
+      ...(seeded.reviewParticipants ?? []).filter(
+        (participant) => participant.review_id === DEMO_REVIEW_ID,
+      ),
+    ],
+    partyDecisions: (data.partyDecisions ?? []).filter(
+      (decision) => decision.review_id !== DEMO_REVIEW_ID,
+    ),
+    findings: [
+      ...fixtureFindings,
+      ...data.findings.filter(
+        (finding) => finding.review_id !== DEMO_REVIEW_ID,
+      ),
+    ],
+    rules: [
+      ...data.rules.filter((rule) => !ruleKeys.has(rule.rule_key)),
+      ...seeded.rules,
+    ],
+    sources: [
+      ...data.sources.filter((source) => !sourceIds.has(source.id)),
+      ...seeded.sources.filter((source) => sourceIds.has(source.id)),
+    ],
+    requests: data.requests.filter(
+      (request) => request.review_id !== DEMO_REVIEW_ID,
+    ),
+    reports: data.reports.filter(
+      (report) => report.review_id !== DEMO_REVIEW_ID,
+    ),
+    ...(data.preScreeningReports
+      ? {
+          preScreeningReports: data.preScreeningReports.filter(
+            (report) => report.review_id !== DEMO_REVIEW_ID,
+          ),
+        }
+      : {}),
+    audit: [
+      ...data.audit.filter((entry) => {
+        if (retiredAuditIds.has(entry.entity_id)) return false;
+        const isOldSeedSourceApproval =
+          entry.entity_type === "source" &&
+          sourceIds.has(entry.entity_id) &&
+          entry.action === "source.approved" &&
+          entry.description.startsWith("Dữ liệu mẫu:");
+        const isOldSeedRuleApproval =
+          entry.entity_type === "rule" &&
+          fixtureRuleIds.has(entry.entity_id) &&
+          entry.action === "rule.approved" &&
+          entry.description.startsWith("Dữ liệu mẫu:");
+        const isFixtureDraftStatus =
+          (entry.entity_type === "source" &&
+            sourceIds.has(entry.entity_id) &&
+            entry.action === "source.draft" &&
+            entry.description.startsWith("Metadata nguồn 21 CFR 101.3")) ||
+          (entry.entity_type === "rule" &&
+            fixtureRuleIds.has(entry.entity_id) &&
+            entry.action === "rule.draft" &&
+            entry.description.startsWith("Bộ gồm 15 quy tắc đang ở DRAFT"));
+        return !(
+          isOldSeedSourceApproval ||
+          isOldSeedRuleApproval ||
+          isFixtureDraftStatus
+        );
+      }),
+      ...fixtureAudit,
+    ].sort((a, b) => b.created_at.localeCompare(a.created_at)),
   };
 }

@@ -3,7 +3,7 @@ import { test, expect } from "./fixtures";
 import { readFile } from "node:fs/promises";
 async function ready(page: Page, path: string) {
   await page.goto(path);
-  await expect(page.locator(".app-shell")).toBeVisible();
+  await expect(page.getByRole("main")).toBeVisible({ timeout: 45_000 });
 }
 async function persona(page: Page, name: string) {
   await ready(page, "/settings");

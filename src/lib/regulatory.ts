@@ -249,11 +249,11 @@ const definitions: RuleDefinition[] = [
     key: "CLAIM-001",
     name: "Claim bệnh lý hoặc điều trị",
     type: "disease_claim",
-    severity: "critical",
+    severity: "information",
     human: true,
     citations: [6],
     action:
-      "Dừng phát hành nhãn có claim này; chuyển chuyên gia để đánh giá phân loại và nội dung claim.",
+      "Chuyển chuyên gia phân loại claim; không kết luận vi phạm hoặc yêu cầu sửa chỉ từ tín hiệu từ khóa.",
   },
   {
     key: "CLAIM-002",

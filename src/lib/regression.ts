@@ -176,14 +176,25 @@ export function runRuleRegression(
       reviewId: "fixture-review",
     });
     const fired = output.findings.find((f) => f.rule_key === rule.rule_key);
+    const diseaseClaimIsTriageOnly = rule.rule_key === "CLAIM-001";
+    const passed = diseaseClaimIsTriageOnly
+      ? !fired &&
+        output.warnings.some((warning) =>
+          warning.includes("tuyên bố liên quan bệnh lý"),
+        )
+      : !!fired && fired.severity === rule.action_json.severity;
     return {
       rule_key: rule.rule_key,
       name: rule.name,
-      passed: !!fired && fired.severity === rule.action_json.severity,
-      expected: `${rule.rule_key}: ${rule.action_json.severity}`,
+      passed,
+      expected: diseaseClaimIsTriageOnly
+        ? "CLAIM-001: expert triage signal without a compliance finding"
+        : `${rule.rule_key}: ${rule.action_json.severity}`,
       actual: fired
         ? `${fired.rule_key}: ${fired.severity}`
-        : "Không phát hiện finding kỳ vọng",
+        : diseaseClaimIsTriageOnly && passed
+          ? "Expert triage warning; no automated finding"
+          : "Không phát hiện finding kỳ vọng",
     };
   });
 }

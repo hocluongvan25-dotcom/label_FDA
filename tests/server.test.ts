@@ -11,12 +11,25 @@ import {
   getOcrProvider,
 } from "../src/server/providers";
 import { scanFile, UnsafeFileError } from "../src/server/virus-scan";
-import { readJson } from "../src/server/context";
+import {
+  hasInProgressVeximRequest,
+  normalizeOrphanedHumanReview,
+  readJson,
+  serviceClient,
+} from "../src/server/context";
 import { apiHandler } from "../src/server/api-handler";
 import { generateReportPdf } from "../src/lib/pdf-report";
 import { createSeedData } from "../src/lib/seed";
-import type { LabelFile } from "../src/lib/types";
+import type {
+  LabelFile,
+  Review,
+  VeximReviewRequest,
+} from "../src/lib/types";
 import { simulatedScanner } from "./helpers/scanner";
+import {
+  isSupabaseConfigured,
+  isSupabaseRequested,
+} from "../src/lib/supabase";
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
@@ -55,6 +68,7 @@ async function pdf(pages = 1) {
 describe("Server boundaries", () => {
   it("returns a real-mode setup error, never demo data from the API", async () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "");
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
     const response = await apiHandler(
       new Request("https://app.example/api/v1/workspace"),
@@ -64,6 +78,30 @@ describe("Server boundaries", () => {
     expect(await response.json()).toMatchObject({
       error: expect.stringContaining("Supabase"),
     });
+  });
+  it("accepts Supabase's current publishable-key env name", async () => {
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://supabase.example");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "test-publishable-key");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_ANON_KEY", "");
+    vi.stubEnv("NEXT_PUBLIC_ENABLE_DEMO", "false");
+    expect(isSupabaseConfigured()).toBe(true);
+    expect(isSupabaseRequested()).toBe(true);
+    const response = await apiHandler(
+      new Request("https://app.example/api/v1/health"),
+      ["health"],
+    );
+    // The request reaches the auth boundary (401), rather than failing config (503).
+    expect(response.status).toBe(401);
+  });
+  it("prefers server-only SUPABASE_URL and falls back to NEXT_PUBLIC_SUPABASE_URL", () => {
+    vi.stubEnv("SUPABASE_SERVICE_ROLE_KEY", "test-service-role-key");
+    vi.stubEnv("SUPABASE_URL", "https://staging-project.supabase.co");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "not-a-valid-url");
+    expect(() => serviceClient()).not.toThrow();
+
+    vi.stubEnv("SUPABASE_URL", "");
+    vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://fallback-project.supabase.co");
+    expect(() => serviceClient()).not.toThrow();
   });
   it("requires a bearer token before any workspace/health query", async () => {
     vi.stubEnv("NEXT_PUBLIC_SUPABASE_URL", "https://supabase.example");
@@ -109,6 +147,52 @@ describe("Server boundaries", () => {
     await expect(
       new ApprovedOcrProvider().recognize([], () => {}),
     ).rejects.toThrow(/HTTPS/);
+  });
+});
+
+describe("Vexim request state stays separate from legacy review state", () => {
+  const review = {
+    id: "review-1",
+    organization_id: "org-1",
+    label_version_id: "label-v3",
+    status: "HUMAN_REVIEW",
+  } as Review;
+  const request = {
+    id: "request-1",
+    review_id: "review-1",
+    organization_id: "org-1",
+    label_version_id: "label-v3",
+    artwork_hash: "a".repeat(64),
+    status: "IN_PROGRESS",
+  } as VeximReviewRequest;
+
+  it("normalizes an orphaned legacy HUMAN_REVIEW state", () => {
+    expect(normalizeOrphanedHumanReview(review, []).status).toBe(
+      "MANUAL_ESCALATION_REQUIRED",
+    );
+  });
+  it("does not treat an unstarted, differently-versioned, or malformed request as active", () => {
+    expect(
+      normalizeOrphanedHumanReview(review, [
+        { ...request, status: "REQUESTED" },
+      ]).status,
+    ).toBe("MANUAL_ESCALATION_REQUIRED");
+    expect(
+      normalizeOrphanedHumanReview(review, [
+        { ...request, label_version_id: "label-v4" },
+      ]).status,
+    ).toBe("MANUAL_ESCALATION_REQUIRED");
+    expect(
+      normalizeOrphanedHumanReview(review, [
+        { ...request, artwork_hash: "not-a-sha256" },
+      ]).status,
+    ).toBe("MANUAL_ESCALATION_REQUIRED");
+  });
+  it("retains HUMAN_REVIEW only for an exact-version in-progress request", () => {
+    expect(hasInProgressVeximRequest(review, [request])).toBe(true);
+    expect(normalizeOrphanedHumanReview(review, [request]).status).toBe(
+      "HUMAN_REVIEW",
+    );
   });
 });
 

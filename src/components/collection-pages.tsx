@@ -54,11 +54,11 @@ export function ProductsPage() {
       <Card>
         <EmptyState
           title="Vai trò này không quản lý hồ sơ sản phẩm"
-          description="Regulatory Admin làm việc với source registry và compliance rules. Trong demo, đổi persona tại Cài đặt để xem quy trình chuyên viên."
+          description="Quản trị tuân thủ làm việc với danh mục nguồn và quy tắc áp dụng. Trong Demo, đổi vai trò tại Cài đặt để xem quy trình chuyên viên."
           icon={<ShieldCheck size={28} />}
           action={
             <Link href="/sources" className="btn btn-primary">
-              Mở source registry
+              Mở danh mục nguồn
             </Link>
           }
         />
@@ -97,7 +97,7 @@ export function ReviewsPage() {
       const p = app.data.products.find((p) => p.id === r.product_id);
       return (
         (tab === "all" ||
-          (tab === "action" && needsAction(r.status)) ||
+          (tab === "action" && needsAction(r.status, r.triage_route)) ||
           (tab === "processing" &&
             ["PROCESSING", "WAITING_FOR_CUSTOMER"].includes(r.status)) ||
           (tab === "completed" && isCompleted(r.status))) &&
@@ -110,7 +110,8 @@ export function ReviewsPage() {
     [
       "action",
       "Cần xử lý",
-      app.data.reviews.filter((r) => needsAction(r.status)).length,
+      app.data.reviews.filter((r) => needsAction(r.status, r.triage_route))
+        .length,
     ],
     [
       "processing",
@@ -131,7 +132,7 @@ export function ReviewsPage() {
       <PageHeader
         eyebrow="REVIEW WORKSPACE"
         title="Không gian rà soát"
-        description="Ưu tiên hồ sơ cần chuyên viên. Đối chiếu nhãn, finding và citation trong cùng một workspace."
+        description="Đối chiếu kết quả Self-check (tự kiểm tra), khuyến nghị phân luồng, nhãn, phát hiện và căn cứ nguồn. Vexim Review chỉ bắt đầu khi có yêu cầu riêng."
         actions={
           can(app.actor, "products") && (
             <Link className="btn btn-secondary" href="/products">
@@ -158,14 +159,14 @@ export function ReviewsPage() {
             <Search size={16} />
             <input
               value={query}
-              aria-label="Tìm review"
+              aria-label="Tìm lượt rà soát"
               placeholder="Tìm sản phẩm đang rà soát…"
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
           <div style={{ width: 200 }}>
             <Select
-              aria-label="Lọc trạng thái review"
+              aria-label="Lọc trạng thái lượt rà soát"
               value={status}
               onChange={(e) => setStatus(e.target.value)}
               style={{ minHeight: 32, padding: "7px 10px", fontSize: 11 }}
@@ -198,11 +199,15 @@ export function ReviewsPage() {
               <div>
                 <h3>{p.name}</h3>
                 <p>
-                  {
-                    app.data.organizations.find(
-                      (o) => o.id === p.organization_id,
-                    )?.name
-                  }{" "}
+                  {app.data.organizations.find(
+                    (o) => o.id === p.organization_id,
+                  )?.name ??
+                    app.data.reviewParticipants?.find(
+                      (participant) =>
+                        participant.review_id === r.id &&
+                        participant.party_role === "label_owner",
+                    )?.organization_name_snapshot ??
+                    "Doanh nghiệp chia sẻ"}{" "}
                   · Nhãn v{label?.version}
                 </p>
               </div>
@@ -221,7 +226,7 @@ export function ReviewsPage() {
                   <Badge>
                     {r.status === "PROCESSING"
                       ? `Tiến độ ${r.progress}%`
-                      : "Chưa ghi nhận finding"}
+                      : "Chưa ghi nhận phát hiện"}
                   </Badge>
                 )}
               </div>
@@ -242,7 +247,7 @@ export function ReviewsPage() {
       {!reviews.length && (
         <Card>
           <EmptyState
-            title="Không có review phù hợp"
+            title="Không có lượt rà soát phù hợp"
             description="Thử đổi trạng thái hoặc bỏ tìm kiếm. Bạn có thể tạo hồ sơ và tải nhãn để bắt đầu."
             action={
               <Button
@@ -302,13 +307,13 @@ export function ReportsPage() {
   return (
     <div className="page">
       <PageHeader
-        eyebrow="HUMAN-APPROVED REPORTS"
+        eyebrow="BÁO CÁO VEXIM · KÝ DUYỆT NỘI BỘ"
         title="Báo cáo rà soát"
-        description="Snapshot bất biến: phiên bản nhãn, finding, nguồn tham chiếu và quyết định của người rà soát."
+        description="Mỗi báo cáo lưu cố định phiên bản nhãn, kết quả, nguồn tham chiếu và quyết định của chuyên viên Vexim. Đây không phải phê duyệt/chứng nhận của FDA hoặc kết luận tuân thủ toàn diện."
         actions={
           <Badge tone="green">
-            <CheckCheck size={13} /> {app.data.reports.length} báo cáo được
-            chuyên viên xác nhận
+            <CheckCheck size={13} /> {app.data.reports.length} báo cáo đã ký
+            duyệt nội bộ
           </Badge>
         }
       />
@@ -337,7 +342,7 @@ export function ReportsPage() {
               <option value="all">Tất cả kết quả</option>
               <option value="NEEDS_CORRECTION">Cần chỉnh sửa</option>
               <option value="NO_ISSUE_DETECTED_IN_SCOPE">
-                Chưa phát hiện vấn đề trong phạm vi
+                Không ghi nhận vấn đề trong phạm vi rà soát
               </option>
               <option value="INSUFFICIENT_INFORMATION">
                 Chưa đủ thông tin
@@ -387,9 +392,7 @@ export function ReportsPage() {
                             : "green"
                       }
                     >
-                      {r.snapshot.result === "NO_ISSUE_DETECTED_IN_SCOPE"
-                        ? "Chưa phát hiện vấn đề trong phạm vi"
-                        : RESULT_LABELS[r.snapshot.result]}
+                      {RESULT_LABELS[r.snapshot.result]}
                     </Badge>
                   </td>
                   <td>
@@ -433,7 +436,7 @@ export function ReportsPage() {
           {!reports.length && (
             <EmptyState
               title="Chưa có báo cáo phù hợp"
-              description="Báo cáo chỉ xuất hiện sau khi chuyên viên xử lý các finding và phê duyệt nội dung."
+              description="Báo cáo Vexim chỉ xuất hiện sau khi chuyên viên xử lý các phát hiện và ký duyệt nội bộ; không phải phê duyệt hoặc chứng nhận của FDA."
               icon={<BookOpen size={29} />}
               action={
                 <Link href="/reviews" className="btn btn-secondary">
@@ -452,9 +455,9 @@ export function ReportsPage() {
       </Card>
       <div style={{ marginTop: 22 }}>
         <InlineNotice icon={<ShieldCheck size={17} />}>
-          “Phê duyệt báo cáo” là quyết định nội bộ của chuyên viên Vexim, không
-          phải sự phê duyệt của FDA. Kết quả chỉ áp dụng cho phiên bản nhãn và
-          phạm vi ghi trong báo cáo.
+          Ký duyệt báo cáo là quyết định nội bộ của chuyên viên Vexim, không
+          phải phê duyệt/chứng nhận của FDA hoặc kết luận tuân thủ toàn diện.
+          Kết quả chỉ áp dụng cho phiên bản nhãn và phạm vi ghi trong báo cáo.
         </InlineNotice>
       </div>
       <Modal
@@ -490,6 +493,9 @@ export function ReportsPage() {
 }
 function ReportPreview({ report }: { report: Report }) {
   const s = report.snapshot;
+  const disposition = s.disposition ?? s.result;
+  const approvedBy = s.approved_by ?? s.reviewer.id;
+  const rationale = s.rationale ?? s.reviewer.comment;
   return (
     <div className="report-preview">
       <div className="report-preview-header">
@@ -500,8 +506,11 @@ function ReportPreview({ report }: { report: Report }) {
             {formatDate(s.generated_at, true)}
           </p>
         </div>
-        <Badge tone="green">
-          <FileCheck2 size={13} /> Chuyên viên đã xác nhận
+        <Badge tone={s.demo ? "amber" : "green"}>
+          <FileCheck2 size={13} />
+          {s.demo
+            ? "BÁO CÁO MẪU · dữ liệu tổng hợp"
+            : "Đã ký duyệt nội bộ Vexim"}
         </Badge>
       </div>
       {s.demo && (
@@ -514,24 +523,40 @@ function ReportPreview({ report }: { report: Report }) {
       )}
       <div className="report-result-box">
         <span>KẾT QUẢ TRONG PHẠM VI RÀ SOÁT</span>
-        <h3>{RESULT_LABELS[s.result]}</h3>
+        <h3>{RESULT_LABELS[disposition]}</h3>
+      </div>
+      <div style={{ marginTop: 12, marginBottom: 18 }}>
+        <InlineNotice tone="info">
+          Kết quả chỉ áp dụng cho đúng phiên bản và phạm vi trong báo cáo; không
+          phải phê duyệt/chứng nhận của FDA hoặc kết luận tuân thủ toàn diện.
+        </InlineNotice>
       </div>
       <dl className="description-list">
-        <dt>Review scope</dt>
-        <dd>{s.review_scope}</dd>
+        <dt>Kết quả (mã hệ thống)</dt>
+        <dd>{disposition}</dd>
+        <dt>Mã người duyệt nội bộ</dt>
+        <dd>{approvedBy}</dd>
+        <dt>Chuyên viên Vexim</dt>
+        <dd>
+          {s.reviewer.name} · {formatDate(s.reviewer.approved_at, true)}
+        </dd>
+        <dt>Lý do ký duyệt</dt>
+        <dd>{rationale}</dd>
+        <dt>Phạm vi rà soát</dt>
+        <dd>
+          {s.review_scope === "us_federal_food_labeling_mvp"
+            ? "Ghi nhãn thực phẩm liên bang tại Hoa Kỳ · phạm vi hỗ trợ hiện tại"
+            : s.review_scope}
+        </dd>
         <dt>Phiên bản nhãn</dt>
         <dd>
           v{s.label_version.version} · {s.label_version.original_files.length}{" "}
           file gốc
         </dd>
-        <dt>Chuyên viên</dt>
-        <dd>
-          {s.reviewer.name} · {formatDate(s.reviewer.approved_at, true)}
-        </dd>
-        <dt>Ghi chú xác nhận</dt>
-        <dd>{s.reviewer.comment}</dd>
       </dl>
-      <h3 style={{ fontSize: 12, marginBottom: 14 }}>Findings & hành động</h3>
+      <h3 style={{ fontSize: 12, marginBottom: 14 }}>
+        Các phát hiện và hành động
+      </h3>
       {s.findings.length ? (
         s.findings.map((f) => (
           <div
@@ -560,7 +585,7 @@ function ReportPreview({ report }: { report: Report }) {
                   .map(
                     (id) =>
                       s.sources.find((source) => source.id === id)?.citation ??
-                      "Citation pending human review",
+                      "Chờ chuyên viên xác minh trích dẫn nguồn",
                   )
                   .join(" · ")}
               </p>
@@ -572,8 +597,8 @@ function ReportPreview({ report }: { report: Report }) {
         ))
       ) : (
         <p className="tiny muted" style={{ marginBottom: 18 }}>
-          Không có finding trong snapshot được duyệt. Kết quả không suy rộng ra
-          ngoài phạm vi rà soát.
+          Chưa ghi nhận phát hiện trong bản chụp báo cáo đã ký duyệt. Kết quả
+          không suy rộng ra ngoài phạm vi rà soát.
         </p>
       )}
       <h3 style={{ fontSize: 12, marginBottom: 14 }}>

@@ -1,5 +1,11 @@
 import { DISCLAIMER, DISCLAIMER_EN } from "./constants";
-import type { Actor, AppData, ReportSnapshot, Review } from "./types";
+import type {
+  Actor,
+  AppData,
+  ReportDisposition,
+  ReportSnapshot,
+  Review,
+} from "./types";
 import { assertCan, assertOrg } from "./permissions";
 import { now, sourceIsCurrent } from "./utils";
 
@@ -7,8 +13,20 @@ export function approvalIssues(
   data: AppData,
   review: Review,
   requireScan = false,
+  requestId?: string,
 ): string[] {
   const issues: string[] = [];
+  const request = data.veximReviewRequests?.find(
+    (candidate) =>
+      candidate.id === requestId &&
+      candidate.review_id === review.id &&
+      candidate.status === "IN_PROGRESS" &&
+      candidate.label_version_id === review.label_version_id,
+  );
+  if (!request || !/^[a-f0-9]{64}$/.test(request.artwork_hash))
+    issues.push(
+      "Chưa có yêu cầu Vexim Review đang xử lý hợp lệ cho đúng phiên bản nhãn; chưa thể phát hành hoặc ký báo cáo Vexim.",
+    );
   if (
     requireScan &&
     data.labelVersions
@@ -16,7 +34,7 @@ export function approvalIssues(
       ?.original_files.some((f) => f.scan_status !== "clean")
   )
     issues.push(
-      "File gốc phải hoàn thành malware scan trước khi phê duyệt báo cáo.",
+      "File gốc phải hoàn tất quét mã độc thật trước khi ký duyệt báo cáo.",
     );
   const findings = data.findings.filter((f) => f.review_id === review.id);
   if (!["HUMAN_REVIEW", "REVISION_REQUIRED"].includes(review.status))
@@ -25,11 +43,11 @@ export function approvalIssues(
     );
   if (review.pipeline.some((s) => s.status !== "complete"))
     issues.push(
-      "Pipeline chưa hoàn thành; cần xử lý hoặc xác minh các bước bị lỗi.",
+      "Quy trình chưa hoàn thành; cần xử lý hoặc xác minh các bước bị lỗi.",
     );
   if (findings.some((f) => f.status === "open"))
     issues.push(
-      `Còn ${findings.filter((f) => f.status === "open").length} finding chưa được xác nhận hoặc loại trừ.`,
+      `Còn ${findings.filter((f) => f.status === "open").length} phát hiện chưa được xác nhận hoặc loại trừ.`,
     );
   if (
     findings.some(
@@ -51,11 +69,11 @@ export function approvalIssues(
     )
   )
     issues.push(
-      "Có finding quan trọng thiếu citation đã được phê duyệt và còn hiệu lực.",
+      "Có phát hiện quan trọng thiếu trích dẫn nguồn đã được phê duyệt và còn hiệu lực.",
     );
   if (!review.rule_snapshot || review.rule_snapshot.length < 15)
     issues.push(
-      "Chưa có snapshot đầy đủ 15 quy tắc MVP. Hãy chạy lại bộ rules đã duyệt.",
+      "Chưa có bản lưu đầy đủ 15 quy tắc trong phạm vi hỗ trợ hiện tại. Hãy chạy lại bộ quy tắc đã được phê duyệt.",
     );
   for (const rule of review.rule_snapshot ?? []) {
     if (
@@ -69,7 +87,7 @@ export function approvalIssues(
       )
     ) {
       issues.push(
-        "Bộ rules đã thay đổi hoặc hết hiệu lực. Hãy chạy lại rà soát trước khi duyệt.",
+        "Bộ quy tắc đã thay đổi hoặc hết hiệu lực. Hãy chạy lại lượt rà soát trước khi ký duyệt.",
       );
       break;
     }
@@ -86,26 +104,51 @@ export function approvalIssues(
       })
     ) {
       issues.push(
-        "Nguồn đã thay đổi, chưa duyệt hoặc hết hiệu lực từ lần review. Hãy rà soát lại.",
+        "Nguồn đã thay đổi, chưa được phê duyệt hoặc hết hiệu lực kể từ lần rà soát. Hãy rà soát lại.",
       );
       break;
     }
   }
   return [...new Set(issues)];
 }
+export function reportDisposition(
+  data: AppData,
+  review: Review,
+): ReportDisposition {
+  const findings = data.findings.filter((f) => f.review_id === review.id);
+  const accepted = findings.filter((f) => f.status === "accepted");
+  const missing =
+    (review.missing_information?.length ?? 0) > 0 ||
+    data.requests.some((r) => r.review_id === review.id && r.status === "open");
+  return accepted.some((f) => ["critical", "major"].includes(f.severity))
+    ? "NEEDS_CORRECTION"
+    : missing
+      ? "INSUFFICIENT_INFORMATION"
+      : "NO_ISSUE_DETECTED_IN_SCOPE";
+}
+
 export function buildReportSnapshot(
   data: AppData,
   review: Review,
   actor: Actor,
   comment: string,
   demo: boolean,
+  requestId: string,
 ): ReportSnapshot {
   assertCan(actor, "review");
   assertOrg(actor, review.organization_id);
   if (comment.trim().length < 10)
     throw new Error("Cần ghi chú phê duyệt ít nhất 10 ký tự.");
-  const issues = approvalIssues(data, review);
+  const request = data.veximReviewRequests?.find(
+    (candidate) =>
+      candidate.id === requestId &&
+      candidate.review_id === review.id &&
+      candidate.status === "IN_PROGRESS" &&
+      candidate.label_version_id === review.label_version_id,
+  );
+  const issues = approvalIssues(data, review, false, requestId);
   if (issues.length) throw new Error(issues.join(" "));
+  if (!request) throw new Error("VeximReviewRequest không hợp lệ.");
   const product =
     review.dossier_snapshot ??
     data.products.find((p) => p.id === review.product_id);
@@ -115,10 +158,7 @@ export function buildReportSnapshot(
   if (!product || !label)
     throw new Error("Không tìm thấy hồ sơ hoặc phiên bản nhãn.");
   const findings = data.findings.filter((f) => f.review_id === review.id);
-  const accepted = findings.filter((f) => f.status === "accepted");
-  const missing =
-    (review.missing_information?.length ?? 0) > 0 ||
-    data.requests.some((r) => r.review_id === review.id && r.status === "open");
+  const disposition = reportDisposition(data, review);
   const citationIds = new Set([
     ...findings.flatMap((f) => f.citation_ids),
     ...(review.rule_snapshot ?? []).flatMap((r) =>
@@ -126,16 +166,23 @@ export function buildReportSnapshot(
     ),
   ]);
   return structuredClone({
-    schema_version: "1.0",
+    schema_version: "1.2",
     review_id: review.id,
+    vexim_review_request: {
+      id: request.id,
+      requested_by: request.requested_by,
+      requested_role: request.requested_role,
+      requested_at: request.requested_at,
+      label_version_id: request.label_version_id,
+      artwork_hash: request.artwork_hash,
+    },
     product,
     label_version: label,
     review_scope: review.review_scope,
-    result: accepted.some((f) => ["critical", "major"].includes(f.severity))
-      ? "NEEDS_CORRECTION"
-      : missing
-        ? "INSUFFICIENT_INFORMATION"
-        : "NO_ISSUE_DETECTED_IN_SCOPE",
+    disposition,
+    approved_by: actor.id,
+    rationale: comment.trim(),
+    result: disposition,
     disclaimer: `${DISCLAIMER}\n\n${DISCLAIMER_EN}`,
     findings,
     sources: data.sources.filter((s) => citationIds.has(s.id)),

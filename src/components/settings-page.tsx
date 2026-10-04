@@ -49,6 +49,11 @@ export function SettingsPage() {
   const roles: { role: Role; name: string; alternate?: boolean }[] = [
     { role: "reviewer", name: "Linh Nguyễn" },
     { role: "customer_admin", name: "Minh Anh · An Nhiên Tea" },
+    {
+      role: "customer_admin",
+      name: "Hoàng Nam · Mộc Trà Việt (importer demo)",
+      alternate: true,
+    },
     { role: "customer_contributor", name: "Tuấn Anh · An Nhiên Tea" },
     { role: "regulatory_admin", name: "Hà Trần · tạo draft" },
     {
@@ -92,7 +97,7 @@ export function SettingsPage() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(
-        "NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co\nNEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY\n# Server/worker ONLY — never put service-role keys in NEXT_PUBLIC variables\nSUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY",
+        "NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co\nNEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLIC_PUBLISHABLE_KEY\n# Older projects may use NEXT_PUBLIC_SUPABASE_ANON_KEY instead.\n# Server/worker ONLY — never put service-role keys in NEXT_PUBLIC variables.\nSUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY",
       );
       app.notify(
         "Đã sao chép mẫu cấu hình. Điền khóa trong .env.local, không gửi khóa bí mật qua chat.",
@@ -194,8 +199,9 @@ export function SettingsPage() {
               </p>
               <pre className="code-block">
                 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co{"\n"}
-                NEXT_PUBLIC_SUPABASE_ANON_KEY=YOUR_PUBLIC_ANON_KEY{"\n"}# Server
-                / worker only:{"\n"}
+                NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLIC_PUBLISHABLE_KEY{"\n"}
+                # Older projects may use NEXT_PUBLIC_SUPABASE_ANON_KEY{"\n"}
+                # Server / worker only:{"\n"}
                 SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVER_ONLY_KEY
               </pre>
               <ol className="setup-steps">
@@ -274,9 +280,13 @@ export function SettingsPage() {
                       className={clsx(
                         "role-button",
                         app.actor.role === r.role &&
-                          (r.role !== "regulatory_admin" ||
-                            !!r.alternate ===
-                              app.actor.id.endsWith("approver")) &&
+                          (r.role === "regulatory_admin"
+                            ? !!r.alternate ===
+                              app.actor.id.endsWith("approver")
+                            : r.role.startsWith("customer")
+                              ? !!r.alternate ===
+                                app.actor.id.endsWith("-importer")
+                              : !r.alternate) &&
                           "active",
                       )}
                       onClick={() => app.setDemoRole(r.role, r.alternate)}

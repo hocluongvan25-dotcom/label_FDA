@@ -58,11 +58,21 @@ export class SupabaseRegulatoryRepository implements RegulatoryHttpStore {
     return { meta: data as ApiSnapshotResponse, body, cache_hit: true };
   }
   async save(doc: ApiDocument) {
-    const mime = doc.meta.validated
-      ? doc.meta.family === "ecfr" && /xml/i.test(doc.meta.content_type)
-        ? "application/xml"
-        : "application/json"
-      : "application/octet-stream";
+    const contentType = doc.meta.content_type
+      .split(";")[0]
+      ?.trim()
+      .toLowerCase();
+    const mime = !doc.meta.validated
+      ? "application/octet-stream"
+      : doc.meta.family === "fda_guidance"
+        ? contentType === "text/html" ||
+          contentType === "application/xhtml+xml" ||
+          contentType === "application/pdf"
+          ? contentType
+          : "application/octet-stream"
+        : doc.meta.family === "ecfr" && /xml/i.test(doc.meta.content_type)
+          ? "application/xml"
+          : "application/json";
     const result = await this.db.storage
       .from("regulatory-raw")
       .upload(doc.meta.raw_storage_key, doc.body, {
@@ -157,6 +167,23 @@ export class SupabaseRegulatoryRepository implements RegulatoryHttpStore {
       data.content_hash,
       null,
     );
+  }
+  async stageFdaGuidance(
+    jid: string,
+    worker: string,
+    snapshotId: string,
+    sections: ParsedSection[],
+    chunks: ParsedRegulatoryChunk[],
+    validation: ParserValidation,
+  ) {
+    return rpc(this.db, "vexim_stage_fda_guidance", {
+      jid,
+      worker_id: worker,
+      snapshot_id: snapshotId,
+      section_data: sections,
+      chunk_data: chunks,
+      validation,
+    });
   }
   parseFailed(jid: string, worker: string, snapshotId: string, error: string) {
     return rpc(this.db, "vexim_mark_regulatory_parse_failed", {

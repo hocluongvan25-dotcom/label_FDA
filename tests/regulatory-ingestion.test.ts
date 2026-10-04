@@ -160,6 +160,9 @@ describe("Regulatory ingestion orchestration: no auto-activation or customer out
     );
     expect(h.snapshots[0].status).toBe("DRAFT");
     expect(h.snapshots[0].parser_version).toBe(ECFR_PARSER_VERSION);
+    expect(h.snapshots[0].metadata.raw_body_size_bytes).toBe(
+      h.docs.find((d) => d.meta.api_url.includes("/full/"))!.meta.byte_size,
+    );
     expect(h.docs).toHaveLength(3);
     const stage = vi.mocked(h.repository.stage).mock.calls[0];
     expect(stage[5]).toMatchObject({

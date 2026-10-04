@@ -75,7 +75,8 @@ export const productInputSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["employee_fte"],
-        message: "Cần số FTE khi yêu cầu pre-check exemption.",
+        message:
+          "Cần số nhân viên quy đổi tương đương toàn thời gian (FTE) khi yêu cầu xem xét miễn trừ.",
       });
     const percentages = p.formula.map((x) => x.percentage);
     if (
@@ -99,7 +100,7 @@ export const productInputSchema = z
       ctx.addIssue({
         code: "custom",
         path: ["claims_confirmed"],
-        message: "Xác nhận các claim dự kiến.",
+        message: "Xác nhận các tuyên bố dự kiến trên nhãn.",
       });
   });
 export function validateIntake(p: Product) {
@@ -123,6 +124,7 @@ export const findingPatchSchema = z
   })
   .strict();
 export const approvalSchema = z.object({
+  request_id: z.string().uuid(),
   comment: z
     .string()
     .trim()

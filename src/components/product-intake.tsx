@@ -57,7 +57,10 @@ const steps = [
     title: "Công thức & bao bì",
     subtitle: "Nguyên liệu, quy cách, khối lượng",
   },
-  { title: "Claim & đơn vị", subtitle: "Nội dung claim, bên chịu trách nhiệm" },
+  {
+    title: "Tuyên bố trên nhãn & các bên",
+    subtitle: "Nội dung nhãn và đơn vị chịu trách nhiệm",
+  },
   { title: "Nhãn & thị trường", subtitle: "File nhãn, kênh bán & xác nhận" },
 ];
 const allergenNames: Record<string, string> = {
@@ -250,7 +253,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
       .sort((a, b) => b.version - a.version)[0];
     if (!files.length && (!latestLabel || existing))
       all.files = existing
-        ? "Hãy tải phiên bản nhãn mới để lưu thay đổi hồ sơ và giữ lịch sử review."
+        ? "Hãy tải phiên bản nhãn mới để lưu thay đổi hồ sơ và giữ nguyên lịch sử rà soát."
         : "Tải ít nhất một file nhãn.";
     if (Object.keys(all).length) {
       setErrors(all);
@@ -275,7 +278,10 @@ export function ProductIntake({ productId }: { productId?: string }) {
         : latestLabel!;
       const review = await app.submitReview(label.id);
       localStorage.removeItem(draftKey);
-      app.notify("Hồ sơ đã được gửi kiểm tra.");
+      app.notify(
+        "Đã lưu hồ sơ và bắt đầu Self-check. Chưa tạo yêu cầu Vexim Review.",
+        "info",
+      );
       router.push(`/reviews/${review.id}`);
     } catch (e) {
       app.notify(errorMessage(e), "error");
@@ -299,7 +305,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
         {existing ? "Về hồ sơ sản phẩm" : "Danh sách sản phẩm"}
       </Link>
       <PageHeader
-        eyebrow="PRODUCT DOSSIER"
+        eyebrow="HỒ SƠ SẢN PHẨM"
         title={existing ? "Cập nhật hồ sơ sản phẩm" : "Tạo hồ sơ sản phẩm"}
         description="Thông tin đầy đủ giúp chuyên viên rà soát chính xác hơn. Bạn có thể lưu nháp bất cứ lúc nào."
         actions={
@@ -350,7 +356,10 @@ export function ProductIntake({ productId }: { productId?: string }) {
                 </span>
                 <div>
                   <h2>Hãy bắt đầu với sản phẩm của bạn</h2>
-                  <p>Phân loại đúng là nền tảng của một review đúng phạm vi.</p>
+                  <p>
+                    Phân loại đúng là nền tảng cho một lượt rà soát đúng phạm
+                    vi.
+                  </p>
                 </div>
               </div>
               <div className="form-grid">
@@ -437,7 +446,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                   label="Thị trường mục tiêu"
                   value="Hoa Kỳ (United States)"
                   readOnly
-                  hint="MVP áp dụng phạm vi nhãn thực phẩm liên bang Hoa Kỳ."
+                  hint="Phạm vi hỗ trợ hiện tại: ghi nhãn thực phẩm liên bang tại Hoa Kỳ."
                 />
                 <Input
                   label="Người phụ trách"
@@ -452,11 +461,13 @@ export function ProductIntake({ productId }: { productId?: string }) {
               {product.classification_status !== "conventional_food" && (
                 <div style={{ marginTop: 21 }}>
                   <InlineNotice tone="warning" icon={<CircleAlert size={18} />}>
-                    <strong>Sản phẩm nằm ngoài phạm vi tự động của MVP.</strong>
+                    <strong>
+                      Sản phẩm nằm ngoài phạm vi xử lý tự động hiện tại.
+                    </strong>
                     <br />
                     Hồ sơ vẫn được tiếp nhận, nhưng phải chuyển chuyên gia.
-                    Không tự động kết luận dietary supplement hoặc đồ uống pha
-                    sẵn.
+                    Không tự động kết luận đây là thực phẩm bổ sung hoặc đồ uống
+                    pha sẵn.
                   </InlineNotice>
                 </div>
               )}
@@ -626,21 +637,21 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     <Tags size={19} />
                   </span>
                   <div>
-                    <h2>Claim và chứng nhận dự kiến</h2>
+                    <h2>Tuyên bố trên nhãn và chứng nhận dự kiến</h2>
                     <p>
-                      Giữ nguyên câu chữ trên nhãn, kể cả claim marketing hoặc
+                      Giữ nguyên câu chữ trên nhãn, kể cả tuyên bố quảng bá hoặc
                       thông tin sức khỏe.
                     </p>
                   </div>
                 </div>
                 <Field
-                  label="Claim dự kiến"
-                  hint="Để trống nếu không có claim. Enter để thêm từng nội dung."
+                  label="Tuyên bố trên nhãn về đặc tính sản phẩm"
+                  hint="Để trống nếu không có tuyên bố. Nhấn Enter để thêm từng nội dung."
                 >
                   <div className="claim-entry">
                     <Input
-                      aria-label="Nội dung claim"
-                      placeholder="Ví dụ: Organic green tea"
+                      aria-label="Nội dung tuyên bố trên nhãn"
+                      placeholder="Ví dụ: trà xanh hữu cơ"
                       value={claimInput}
                       onChange={(e) => setClaimInput(e.target.value)}
                       onKeyDown={(e) => {
@@ -660,7 +671,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     <span key={c} className="claim-tag">
                       {c}
                       <IconButton
-                        label={`Xóa claim ${c}`}
+                        label={`Xóa tuyên bố ${c}`}
                         onClick={() =>
                           update(
                             "claims",
@@ -678,9 +689,8 @@ export function ProductIntake({ productId }: { productId?: string }) {
                 ) && (
                   <div style={{ marginTop: 16 }}>
                     <InlineNotice tone="error" icon={<CircleAlert size={17} />}>
-                      Có claim liên quan bệnh lý / điều trị. Hồ sơ bắt buộc
-                      chuyên gia rà soát; không tự động kết luận sản phẩm hợp
-                      lệ.
+                      Có tuyên bố liên quan bệnh lý / điều trị. Hồ sơ cần chuyên
+                      gia rà soát; không tự động kết luận sản phẩm hợp lệ.
                     </InlineNotice>
                   </div>
                 )}
@@ -692,7 +702,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     <div className="claim-entry">
                       <Input
                         aria-label="Chứng nhận dự kiến"
-                        placeholder="Organic certificate, non-GMO…"
+                        placeholder="Ví dụ: chứng nhận hữu cơ, không biến đổi gen…"
                         value={certInput}
                         onChange={(e) => setCertInput(e.target.value)}
                       />
@@ -751,7 +761,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                       ["manufacturer", "Nhà sản xuất"],
                       ["packer", "Đơn vị đóng gói"],
                       ["distributor", "Đơn vị phân phối"],
-                      ["importer", "Importer / consignee"],
+                      ["importer", "Nhà nhập khẩu thương mại"],
                     ] as const
                   ).map(([key, label]) => (
                     <div className="party-card" key={key}>
@@ -766,7 +776,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                         error={errors[`${key}.name`]}
                       />
                       <Input
-                        label="Địa chỉ"
+                        label={`Địa chỉ ${label.toLowerCase()}`}
                         required={key === "manufacturer"}
                         value={product[key].address}
                         onChange={(e) =>
@@ -780,6 +790,12 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     </div>
                   ))}
                 </div>
+                <p className="tiny muted" style={{ marginTop: 12 }}>
+                  Trường nhà nhập khẩu thương mại không ghi nhận riêng bên nhận
+                  hàng (consignee) nếu hai bên khác nhau và không xác lập tư
+                  cách FSVP Importer. Tư cách FSVP được xác nhận độc lập trong
+                  luồng cộng tác.
+                </p>
               </div>
             </>
           )}
@@ -812,8 +828,8 @@ export function ProductIntake({ productId }: { productId?: string }) {
                   <div style={{ marginTop: 15 }}>
                     <InlineNotice icon={<Info size={16} />}>
                       Trong demo, nhãn của bạn ở trên thiết bị này (IndexedDB)
-                      và OCR chạy cục bộ. Chưa có malware scan; chỉ thử với file
-                      tin cậy.
+                      và nhận dạng chữ (OCR) chạy cục bộ. Chưa quét phần mềm độc
+                      hại; chỉ thử với file tin cậy.
                     </InlineNotice>
                   </div>
                 )}
@@ -824,7 +840,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     <Globe2 size={19} />
                   </span>
                   <div>
-                    <h2>Kênh bán hàng & exemption pre-check</h2>
+                    <h2>Kênh bán hàng & điều kiện miễn ghi nhãn</h2>
                     <p>
                       Chỉ thu thập dữ liệu; quyết định miễn ghi nhãn cần chuyên
                       viên xác nhận.
@@ -873,7 +889,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     error={errors.expected_us_units_12m}
                   />
                   <Input
-                    label="Nhân sự quy đổi FTE"
+                    label="Nhân sự tương đương toàn thời gian (FTE)"
                     type="number"
                     min="0"
                     step="0.1"
@@ -885,7 +901,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                         e.target.value === "" ? null : Number(e.target.value),
                       )
                     }
-                    tooltip="Full-time equivalent: số nhân sự quy đổi tương đương toàn thời gian. Cần xác nhận phạm vi theo quy định áp dụng."
+                    tooltip="FTE là số nhân sự quy đổi tương đương toàn thời gian. Cần xác nhận phạm vi theo quy định áp dụng."
                     error={errors.employee_fte}
                   />
                 </div>
@@ -894,7 +910,8 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     checked={product.exemption_requested}
                     onChange={(v) => update("exemption_requested", v)}
                   >
-                    Đề nghị chuyên viên đánh giá Nutrition Labeling Exemption
+                    Đề nghị chuyên viên đánh giá điều kiện miễn ghi nhãn dinh
+                    dưỡng (Nutrition Labeling Exemption)
                   </Checkbox>
                 </div>
               </div>
@@ -922,8 +939,8 @@ export function ProductIntake({ productId }: { productId?: string }) {
                     checked={product.claims_confirmed}
                     onChange={(v) => update("claims_confirmed", v)}
                   >
-                    Tôi xác nhận đã khai báo đầy đủ claim và các dấu chứng nhận
-                    dự kiến.
+                    Tôi xác nhận đã khai báo đầy đủ tuyên bố trên nhãn và các
+                    dấu chứng nhận dự kiến.
                   </Checkbox>
                 </div>
                 {Object.keys(errors).length > 0 && (
@@ -961,7 +978,7 @@ export function ProductIntake({ productId }: { productId?: string }) {
                 </Button>
               ) : (
                 <Button onClick={() => void submit()} loading={busy}>
-                  <FileText size={15} /> Lưu và gửi rà soát
+                  <FileText size={15} /> Lưu và chạy Self-check
                 </Button>
               )}
             </div>
@@ -973,8 +990,8 @@ export function ProductIntake({ productId }: { productId?: string }) {
               <ShieldCheck size={17} /> Hồ sơ có thể giải thích
             </h3>
             <p>
-              Mỗi finding sẽ được gắn evidence, rule, citation và quyết định của
-              chuyên viên.
+              Mỗi phát hiện gắn với bằng chứng, quy tắc, căn cứ trích dẫn và
+              quyết định của chuyên viên.
             </p>
             <ul>
               <li>
@@ -997,14 +1014,16 @@ export function ProductIntake({ productId }: { productId?: string }) {
             </div>
             <p>
               {missing
-                ? `${missing} mục cần bổ sung hoặc xác nhận trước khi gửi.`
-                : "Thông tin intake đã đầy đủ. Hãy kiểm tra file nhãn và gửi review."}
+                ? `${missing} mục cần bổ sung hoặc xác nhận trước khi chạy Self-check.`
+                : "Thông tin đã đầy đủ. Hãy kiểm tra file nhãn và chạy Self-check."}
             </p>
           </Card>
           <div className="inline-notice" style={{ fontSize: 11 }}>
             <Info size={15} />
             <div>
-              Rà soát sơ bộ trong phạm vi MVP, không phải phê duyệt của FDA.
+              Self-check chỉ là rà soát sơ bộ trong phạm vi hỗ trợ hiện tại.
+              Thao tác này không gửi yêu cầu Vexim Review và không xác định việc
+              tuân thủ hoặc phê duyệt của FDA.
             </div>
           </div>
         </aside>

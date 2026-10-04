@@ -28,6 +28,7 @@ import {
   SeverityBadge,
 } from "./ui";
 import { ProductsTable } from "./products-table";
+import { CollaborationInbox } from "./review-collaboration";
 import { can } from "@/lib/permissions";
 import {
   findingCounts,
@@ -42,7 +43,9 @@ import { PIPELINE_LABELS } from "@/lib/constants";
 export function Dashboard() {
   const { data, actor } = useApp();
   const [guide, setGuide] = useState(false);
-  const tasks = data.reviews.filter((r) => needsAction(r.status));
+  const tasks = data.reviews.filter((r) =>
+    needsAction(r.status, r.triage_route),
+  );
   const revision = data.reviews.filter((r) => r.status === "REVISION_REQUIRED");
   const complete = data.reviews.filter((r) => isCompleted(r.status));
   const priority = [...tasks]
@@ -65,11 +68,11 @@ export function Dashboard() {
       href: "/products",
     },
     {
-      label: "Chờ chuyên viên xử lý",
+      label: "Hồ sơ cần rà soát",
       count: tasks.length,
       icon: ScanLine,
       tone: "lavender",
-      note: "Cần bạn rà soát & xác nhận",
+      note: "Recommendation triage không phải Vexim request",
       href: "/reviews?tab=action",
     },
     {
@@ -182,6 +185,7 @@ export function Dashboard() {
           </>
         }
       />
+      <CollaborationInbox />
       <div className="stats-grid">
         {stats.map((s) => (
           <Link href={s.href} className="stat-card" key={s.label}>
@@ -241,10 +245,12 @@ export function Dashboard() {
               <Leaf size={19} />
             </span>
             <div>
-              <strong>Chuyên gia quyết định. Công nghệ hỗ trợ.</strong>
+              <strong>Chủ nhãn xác nhận. Chuyên gia hỗ trợ khi cần.</strong>
               <p>
-                Mỗi phát hiện được đối chiếu với evidence và nguồn tham chiếu
-                trước khi phát hành báo cáo.
+                Chủ nhãn rà soát trước; nhà nhập khẩu thương mại (Commercial
+                Importer) chỉ phản hồi phiên bản đã chia sẻ. Vexim quản lý nguồn
+                / quy tắc và có thể được mời rà soát chuyên sâu — không phải
+                cổng phê duyệt mặc định giữa hai doanh nghiệp.
               </p>
             </div>
             <button onClick={() => setGuide(true)}>

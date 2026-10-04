@@ -28,7 +28,7 @@ import {
   Textarea,
 } from "./ui";
 import { api } from "@/lib/supabase";
-import { errorMessage, formatDate } from "@/lib/utils";
+import { errorMessage, formatBytes, formatDate } from "@/lib/utils";
 import type {
   IngestionKind,
   KnowledgeDashboard,
@@ -83,6 +83,30 @@ const labels: Record<string, string> = {
   retry: "Chờ thử lại",
   completed: "Hoàn thành",
   dead_letter: "Cần xử lý",
+};
+const citationPrecisionLabels: Record<string, string> = {
+  paragraph: "paragraph-level · parser resolved",
+  section: "section-level only",
+  heading: "heading-level",
+  page: "PDF page-level",
+  unresolved: "UNRESOLVED · expert review required",
+};
+const safeRegulatoryAnchor = (anchor: string) => {
+  try {
+    const url = new URL(anchor);
+    return url.protocol === "https:" &&
+      [
+        "www.ecfr.gov",
+        "www.fda.gov",
+        "fda.gov",
+        "www.govinfo.gov",
+        "govinfo.gov",
+      ].includes(url.hostname)
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
 };
 export function KnowledgePage() {
   const app = useApp();
@@ -337,6 +361,65 @@ export function KnowledgePage() {
   );
   const alerts = dashboard?.alerts.filter((a) => !a.resolved_at) ?? [];
   const snap = selected?.snapshot;
+  const validation = snap?.validation_results as
+    Record<string, unknown> | undefined;
+  const parserUnresolvedCount =
+    typeof validation?.unresolved_citation_count === "number" &&
+    Number.isSafeInteger(validation.unresolved_citation_count) &&
+    validation.unresolved_citation_count >= 0
+      ? validation.unresolved_citation_count
+      : null;
+  const pageUnresolvedCount =
+    selected?.chunks.filter(
+      (chunk) => chunk.citation_precision === "unresolved",
+    ).length ?? 0;
+  const allSnapshotChunksLoaded =
+    !!selected &&
+    selected.offset === 0 &&
+    selected.total_count === selected.chunks.length;
+  const parserWarnings = Array.isArray(validation?.warnings)
+    ? validation.warnings.map(String)
+    : [];
+  const parserReportsUnresolved = parserWarnings.some((warning) =>
+    /unresolved numbering|repeated paragraph\b.*retained as section-level evidence/i.test(
+      warning,
+    ),
+  );
+  const explicitPathsResolved =
+    typeof validation?.citation_paths_resolved === "boolean"
+      ? validation.citation_paths_resolved
+      : undefined;
+  const unresolvedCitationFound =
+    explicitPathsResolved === false ||
+    parserReportsUnresolved ||
+    (parserUnresolvedCount !== null && parserUnresolvedCount > 0) ||
+    pageUnresolvedCount > 0;
+  const citationPrecisionStatus = unresolvedCitationFound
+    ? "unresolved"
+    : explicitPathsResolved === true ||
+        parserUnresolvedCount === 0 ||
+        allSnapshotChunksLoaded
+      ? "clear"
+      : "unverified";
+  const citationPrecisionSummary =
+    parserUnresolvedCount === 0 &&
+    (explicitPathsResolved === false ||
+      parserReportsUnresolved ||
+      pageUnresolvedCount > 0)
+      ? "Parser summary conflicts with unresolved chunk evidence; expert review is required."
+      : parserUnresolvedCount !== null
+        ? `${parserUnresolvedCount} unresolved chunk${parserUnresolvedCount === 1 ? "" : "s"} reported across parser output.`
+        : parserReportsUnresolved
+          ? "Parser warnings report unresolved numbering; exact count was not recorded."
+          : explicitPathsResolved === false
+            ? "Parser marks citation paths unresolved; exact count was not recorded."
+            : pageUnresolvedCount > 0
+              ? `${pageUnresolvedCount} unresolved chunk${pageUnresolvedCount === 1 ? "" : "s"} in the displayed page; full-snapshot count is unavailable.`
+              : allSnapshotChunksLoaded
+                ? "No unresolved citation chunks in the complete loaded snapshot. This is structural parser output, not expert approval."
+                : selected
+                  ? "No unresolved chunks in the displayed page; full-snapshot citation status is unverified."
+                  : "Citation precision has not been checked until snapshot detail is loaded.";
   const independent =
     !!snap &&
     snap.reviewed_by !== app.actor.id &&
@@ -440,6 +523,12 @@ export function KnowledgePage() {
               eCFR · discovery & legal search
             </option>
             <option value="fr_monitor">Federal Register · theo dõi FDA</option>
+            <option value="fda_label_claims_html">
+              FDA Guidance · Label Claims (HTML)
+            </option>
+            <option value="fda_food_label_guide_pdf">
+              FDA Guidance · Food Labeling Guide (PDF)
+            </option>
           </Select>
           {kind === "ecfr_section" && (
             <Select
@@ -505,6 +594,14 @@ export function KnowledgePage() {
             <Checkbox checked={force} onChange={setForce}>
               Bỏ cache để kiểm tra lại raw body / hash
             </Checkbox>
+          )}
+          {(kind === "fda_label_claims_html" ||
+            kind === "fda_food_label_guide_pdf") && (
+            <InlineNotice tone="warning">
+              FDA Guidance chỉ là tài liệu diễn giải, không phải 21 CFR. Kết quả
+              chỉ được lưu DRAFT để chuyên gia xem parser output; không vào RAG,
+              không tạo/active rules và không tự kết luận compliance/vi phạm.
+            </InlineNotice>
           )}
           <Button
             loading={busy}
@@ -627,7 +724,9 @@ export function KnowledgePage() {
                           <Badge>
                             {s.source_family === "ecfr"
                               ? "eCFR"
-                              : "FR · monitor only"}
+                              : s.source_family === "federal_register"
+                                ? "FR · monitor only"
+                                : `FDA Guidance · ${String(s.metadata.format ?? "HTML/PDF")}`}
                           </Badge>
                         </div>
                         <p>{s.title}</p>
@@ -980,41 +1079,144 @@ export function KnowledgePage() {
               <Badge tone={tone(snap.status)}>
                 {labels[snap.status] ?? snap.status}
               </Badge>
-              <Badge>{snap.source_family}</Badge>
+              <Badge>
+                {snap.source_family === "ecfr"
+                  ? "eCFR"
+                  : snap.source_family === "federal_register"
+                    ? "Federal Register · monitor only"
+                    : `FDA Guidance · ${String(snap.metadata.format ?? "format unknown")}`}
+              </Badge>
               {snap.metadata.simulation === true && (
                 <Badge tone="amber">MÔ PHỎNG · KHÔNG PHẢI NGUỒN THẬT</Badge>
               )}
             </div>
             <dl className="knowledge-provenance">
               <div>
-                <dt>Edition / issue date</dt>
-                <dd>{snap.issue_date ?? "Không áp dụng (FR metadata)"}</dd>
+                <dt>Snapshot ID</dt>
+                <dd>
+                  <code>{snap.id}</code>
+                </dd>
               </div>
+              <div>
+                <dt>Raw response ID</dt>
+                <dd>
+                  <code>{snap.raw_response_id}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Issue date</dt>
+                <dd>{snap.issue_date ?? "Không có issue date"}</dd>
+              </div>
+              <div>
+                <dt>Document revision date</dt>
+                <dd>
+                  {snap.document_revision_date ??
+                    "Không có ngày dạng YYYY-MM-DD"}
+                  {snap.document_revision_label && (
+                    <> · Document label: {snap.document_revision_label}</>
+                  )}
+                  {typeof snap.metadata.revision_date_source === "string" && (
+                    <>
+                      <br />
+                      Nguồn metadata: {snap.metadata.revision_date_source}
+                    </>
+                  )}
+                </dd>
+              </div>
+              {snap.source_family === "fda_guidance" && (
+                <>
+                  <div>
+                    <dt>Authority</dt>
+                    <dd>{String(snap.metadata.authority ?? "FDA")}</dd>
+                  </div>
+                  <div>
+                    <dt>Issuing agency</dt>
+                    <dd>{String(snap.metadata.issuing_agency ?? "FDA")}</dd>
+                  </div>
+                  <div>
+                    <dt>Document type · format</dt>
+                    <dd>
+                      {String(snap.metadata.document_type ?? "GUIDANCE")} ·{" "}
+                      {String(snap.metadata.format ?? "—")}
+                    </dd>
+                  </div>
+                </>
+              )}
               <div>
                 <dt>Retrieved at</dt>
-                <dd>{formatDate(snap.retrieved_at)}</dd>
-              </div>
-              <div>
-                <dt>Effective from / to</dt>
                 <dd>
-                  {snap.effective_from ?? "Unknown"} →{" "}
-                  {snap.effective_to ?? "Chưa có mốc kết thúc"}
+                  {formatDate(snap.retrieved_at, true)} (GMT+7)
+                  <br />
+                  <code>{snap.retrieved_at}</code>
                 </dd>
               </div>
               <div>
-                <dt>Source version / parser</dt>
+                <dt>Effective date</dt>
                 <dd>
-                  {snap.source_version} · {snap.parser_version ?? "Chưa parse"}
+                  {snap.effective_date_unknown ? (
+                    <Badge tone="amber">UNKNOWN — cần xác minh</Badge>
+                  ) : (
+                    <>
+                      {snap.effective_from ?? "Chưa ghi nhận ngày bắt đầu"} →{" "}
+                      {snap.effective_to ?? "chưa có ngày kết thúc"}
+                    </>
+                  )}
                 </dd>
               </div>
+              <div>
+                <dt>Source version</dt>
+                <dd>{snap.source_version}</dd>
+              </div>
+              <div>
+                <dt>Parser version</dt>
+                <dd>{snap.parser_version ?? "Chưa parse"}</dd>
+              </div>
+              <div>
+                <dt>Snapshot status</dt>
+                <dd>
+                  <Badge tone={tone(snap.status)}>
+                    {snap.status} · {labels[snap.status] ?? snap.status}
+                  </Badge>
+                </dd>
+              </div>
+              <div>
+                <dt>Chunk count</dt>
+                <dd>
+                  {snap.chunk_count} stored ·{" "}
+                  {selected?.total_count ?? snap.chunk_count} loaded
+                </dd>
+              </div>
+              <div>
+                <dt>Raw body size</dt>
+                <dd>
+                  {typeof snap.metadata.raw_body_size_bytes === "number"
+                    ? `${snap.metadata.raw_body_size_bytes.toLocaleString("vi-VN")} bytes (${formatBytes(snap.metadata.raw_body_size_bytes)})`
+                    : "Chưa có metadata kích thước raw body"}
+                </dd>
+              </div>
+              {snap.source_family === "fda_guidance" && (
+                <div>
+                  <dt>Verified MIME · HTTP Last-Modified</dt>
+                  <dd>
+                    {String(snap.metadata.raw_content_type ?? "—")} ·{" "}
+                    {String(
+                      snap.metadata.raw_last_modified ?? "Không có header",
+                    )}
+                  </dd>
+                </div>
+              )}
               <div className="knowledge-provenance-wide">
-                <dt>Raw SHA-256</dt>
+                <dt>SHA-256 exact decoded response body</dt>
                 <dd>
                   <code>{snap.content_hash}</code>
                 </dd>
               </div>
               <div className="knowledge-provenance-wide">
-                <dt>API request · đúng snapshot</dt>
+                <dt>
+                  {snap.source_family === "fda_guidance"
+                    ? "Fetch URL"
+                    : "API URL"}
+                </dt>
                 <dd>
                   <a
                     href={snap.api_url}
@@ -1025,6 +1227,53 @@ export function KnowledgePage() {
                   </a>
                 </dd>
               </div>
+              <div className="knowledge-provenance-wide">
+                <dt>
+                  {snap.source_family === "ecfr"
+                    ? "Canonical URL · edition pinned"
+                    : "Canonical source URL"}
+                </dt>
+                <dd>
+                  <a
+                    href={snap.canonical_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {snap.canonical_url}
+                  </a>
+                </dd>
+              </div>
+              {selected?.source_links?.length ? (
+                <div className="knowledge-provenance-wide">
+                  <dt>
+                    {snap.source_family === "ecfr"
+                      ? "Source IDs by section"
+                      : "Source IDs by heading / PDF page"}
+                  </dt>
+                  <dd>
+                    {snap.source_family === "ecfr" ? (
+                      selected.source_links.map((link) => (
+                        <div key={`${link.section}:${link.source_id}`}>
+                          21 CFR {link.section} · <code>{link.source_id}</code>
+                        </div>
+                      ))
+                    ) : (
+                      <>
+                        {selected.source_links.length} parsed sections/pages ·{" "}
+                        <code>
+                          {[
+                            ...new Set(
+                              selected.source_links.map(
+                                (link) => link.source_id,
+                              ),
+                            ),
+                          ].join(", ")}
+                        </code>
+                      </>
+                    )}
+                  </dd>
+                </div>
+              ) : null}
             </dl>
             {snap.source_family === "federal_register" ? (
               <>
@@ -1053,99 +1302,369 @@ export function KnowledgePage() {
               </>
             ) : (
               <>
-                <div className="knowledge-validation">
-                  <strong>Kiểm tra tự động</strong>
-                  {[
-                    ["Coverage", snap.validation_results.coverage_complete],
-                    ["Citations", snap.validation_results.citations_valid],
-                    [
-                      "Deterministic regression",
-                      snap.validation_results.regression_passed,
-                    ],
-                  ].map(([l, v]) => (
-                    <Badge key={String(l)} tone={v === true ? "green" : "red"}>
-                      {String(l)} · {v === true ? "PASS" : "CHƯA ĐẠT"}
-                    </Badge>
-                  ))}
-                  <p>
-                    Regression kiểm tra code bằng fixtures, không xác nhận
-                    interpretation của phiên bản luật mới. Cần chuyên viên đối
-                    chiếu riêng.
-                  </p>
-                </div>
-                <div className="knowledge-validation">
-                  <strong>Regression của rules bị ảnh hưởng</strong>
-                  <Badge
-                    tone={
-                      selected?.regression?.passed &&
-                      selected.regression.fresh !== false
-                        ? "green"
-                        : "amber"
-                    }
-                  >
-                    {selected?.regression?.passed &&
-                    selected.regression.fresh !== false
-                      ? "PASS · fresh"
-                      : "CẦN CHẠY LẠI / CHƯA ĐẠT"}
-                  </Badge>
-                  <p>
-                    {selected?.regression?.rule_refs.length ?? 0} active rules ·
-                    fixture inputs tổng hợp, không phải kiểm chứng
-                    interpretation luật mới.
-                  </p>
-                  {reg &&
-                    ["DRAFT", "REGULATORY_REVIEW"].includes(snap.status) && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        loading={busy}
-                        onClick={() =>
-                          void perform(async () => {
-                            await mutate(`snapshots/${snap.id}/regression`, {
-                              expected_hash: snap.content_hash,
-                            });
-                            await detail(snap.id);
-                            app.notify(
-                              "Đã chạy fixtures trên definitions hiện tại của các rules bị ảnh hưởng.",
-                            );
-                          })
+                {snap.source_family === "fda_guidance" ? (
+                  <>
+                    <InlineNotice tone="warning">
+                      Nguồn, snapshot và chunks vẫn DRAFT; parser không tự phê
+                      duyệt, không tạo/active rules và không cấp RAG visibility.
+                      FDA Guidance là tài liệu diễn giải, không phải 21 CFR.
+                      Parser không kết luận về tình trạng tuân thủ hoặc vi phạm;
+                      health/disease claims cần chuyên gia đánh giá.
+                    </InlineNotice>
+                    <div className="knowledge-validation">
+                      <strong>Parser coverage · chưa phải expert review</strong>
+                      <Badge
+                        tone={
+                          snap.validation_results.coverage_complete === true
+                            ? "green"
+                            : "red"
                         }
                       >
-                        Chạy lại affected-rule regression
-                      </Button>
+                        Coverage ·{" "}
+                        {snap.validation_results.coverage_complete === true
+                          ? "ĐẠT"
+                          : "CHƯA ĐẠT"}
+                      </Badge>
+                      <Badge
+                        tone={
+                          snap.validation_results.citations_valid === true
+                            ? "green"
+                            : "red"
+                        }
+                      >
+                        Citations ·{" "}
+                        {snap.validation_results.citations_valid === true
+                          ? "ĐẠT"
+                          : "CHƯA ĐẠT"}
+                      </Badge>
+                      <Badge tone="amber">Source status · DRAFT</Badge>
+                      <p>
+                        Format {String(snap.metadata.format ?? "—")} · headings{" "}
+                        {String(snap.validation_results.heading_count ?? "—")} ·
+                        pages{" "}
+                        {String(snap.validation_results.page_count ?? "—")} ·
+                        PDF pages with text{" "}
+                        {String(snap.validation_results.text_page_count ?? "—")}
+                        /{String(snap.validation_results.page_count ?? "—")} ·
+                        sections{" "}
+                        {String(snap.validation_results.section_count ?? "—")} ·
+                        chunks{" "}
+                        {String(
+                          snap.validation_results.chunk_count ??
+                            snap.chunk_count,
+                        )}{" "}
+                        · coverage{" "}
+                        {typeof snap.validation_results.coverage_ratio ===
+                        "number"
+                          ? `${(snap.validation_results.coverage_ratio * 100).toFixed(1)}%`
+                          : "—"}
+                        .
+                      </p>
+                    </div>
+                    {snap.source_key === "fda-label-claims" && (
+                      <InlineNotice tone="info">
+                        Nội dung health/disease claim chỉ là tín hiệu để chuyển
+                        expert review. Không tạo finding kết luận vi phạm khi
+                        chưa có chuyên gia xác nhận.
+                      </InlineNotice>
                     )}
-                </div>
+                  </>
+                ) : (
+                  <>
+                    {snap.status === "DRAFT" && (
+                      <InlineNotice tone="warning">
+                        Snapshot eCFR đang ở DRAFT. Parser coverage và kiểm tra
+                        cú pháp citation không phải expert approval;
+                        nguồn/chunks chưa được duyệt và không đủ điều kiện
+                        retrieval/RAG.
+                      </InlineNotice>
+                    )}
+                    <div className="knowledge-validation">
+                      <strong>Kiểm tra tự động</strong>
+                      {[
+                        ["Coverage", snap.validation_results.coverage_complete],
+                        [
+                          "Citation syntax",
+                          snap.validation_results.citations_valid,
+                        ],
+                        [
+                          "Deterministic regression",
+                          snap.validation_results.regression_passed,
+                        ],
+                      ].map(([l, v]) => (
+                        <Badge
+                          key={String(l)}
+                          tone={v === true ? "green" : "red"}
+                        >
+                          {String(l)} · {v === true ? "PASS" : "CHƯA ĐẠT"}
+                        </Badge>
+                      ))}
+                      <Badge
+                        tone={
+                          citationPrecisionStatus === "unresolved"
+                            ? "red"
+                            : citationPrecisionStatus === "clear"
+                              ? "green"
+                              : "amber"
+                        }
+                      >
+                        Đường dẫn điều khoản ·{" "}
+                        {citationPrecisionStatus === "unresolved"
+                          ? "CẦN CHUYÊN GIA XEM XÉT"
+                          : citationPrecisionStatus === "clear"
+                            ? "KHÔNG GHI NHẬN ĐƯỜNG DẪN CHƯA XÁC MINH"
+                            : "CHƯA XÁC MINH"}
+                      </Badge>
+                      <p>
+                        Sections:{" "}
+                        {String(snap.validation_results.section_count ?? "—")} ·
+                        paragraphs:{" "}
+                        {String(snap.validation_results.paragraph_count ?? "—")}{" "}
+                        · chunks:{" "}
+                        {String(
+                          snap.validation_results.chunk_count ??
+                            snap.chunk_count,
+                        )}{" "}
+                        · missing:{" "}
+                        {Array.isArray(
+                          snap.validation_results.missing_sections,
+                        ) && snap.validation_results.missing_sections.length
+                          ? snap.validation_results.missing_sections
+                              .map(String)
+                              .join(", ")
+                          : "none"}
+                        . Kiểm tra citation chỉ xác nhận cú pháp; điều đó không
+                        có nghĩa paragraph path đã được giải quyết. Trạng thái
+                        unresolved được báo riêng ở trên. Regression kiểm tra
+                        code bằng fixtures, không xác nhận interpretation của
+                        phiên bản luật mới. Cần chuyên viên đối chiếu riêng.
+                      </p>
+                    </div>
+                    <div className="knowledge-validation">
+                      <strong>Regression của rules bị ảnh hưởng</strong>
+                      <Badge
+                        tone={
+                          selected?.regression?.passed &&
+                          selected.regression.fresh !== false
+                            ? "green"
+                            : "amber"
+                        }
+                      >
+                        {selected?.regression?.passed &&
+                        selected.regression.fresh !== false
+                          ? "PASS · fresh"
+                          : "CẦN CHẠY LẠI / CHƯA ĐẠT"}
+                      </Badge>
+                      <p>
+                        {selected?.regression?.rule_refs.length ?? 0} active
+                        rules · fixture inputs tổng hợp, không phải kiểm chứng
+                        interpretation luật mới.
+                      </p>
+                      {reg &&
+                        ["DRAFT", "REGULATORY_REVIEW"].includes(
+                          snap.status,
+                        ) && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            loading={busy}
+                            onClick={() =>
+                              void perform(async () => {
+                                await mutate(
+                                  `snapshots/${snap.id}/regression`,
+                                  {
+                                    expected_hash: snap.content_hash,
+                                  },
+                                );
+                                await detail(snap.id);
+                                app.notify(
+                                  "Đã chạy fixtures trên definitions hiện tại của các rules bị ảnh hưởng.",
+                                );
+                              })
+                            }
+                          >
+                            Chạy lại affected-rule regression
+                          </Button>
+                        )}
+                    </div>
+                  </>
+                )}
                 {Array.isArray(snap.validation_results.warnings) &&
                   snap.validation_results.warnings.length > 0 && (
                     <InlineNotice tone="warning">
                       {snap.validation_results.warnings.map(String).join(" · ")}
                     </InlineNotice>
                   )}
+                {snap.source_family === "ecfr" && selected && (
+                  <div
+                    className={`knowledge-citation-review knowledge-citation-review-${citationPrecisionStatus}`}
+                  >
+                    <div className="knowledge-snapshot-heading">
+                      <strong>
+                        Độ chính xác đường dẫn điều khoản · chỉ kiểm tra cấu
+                        trúc
+                      </strong>
+                      <Badge
+                        tone={
+                          citationPrecisionStatus === "unresolved"
+                            ? "red"
+                            : citationPrecisionStatus === "clear"
+                              ? "green"
+                              : "amber"
+                        }
+                      >
+                        {citationPrecisionStatus === "unresolved"
+                          ? "CHƯA XÁC MINH · CẦN CHUYÊN GIA XEM XÉT"
+                          : citationPrecisionStatus === "clear"
+                            ? "CHƯA GHI NHẬN ĐƯỜNG DẪN CHƯA XÁC MINH"
+                            : "CHƯA XÁC MINH"}
+                      </Badge>
+                    </div>
+                    <p>{citationPrecisionSummary}</p>
+                    <p>
+                      “Chưa xác minh” nghĩa là đoạn trích chưa có đường dẫn đến
+                      điều khoản cụ thể đã được xác minh; mốc trích dẫn có thể
+                      chỉ đến mục CFR. Không suy ra khoản hoặc điểm từ đoạn
+                      trích hay ký hiệu đứng riêng. Chuyên gia pháp quy cần đối
+                      chiếu XML eCFR thô, đầy đủ và có ngày tháng. Giữ đoạn
+                      trích chưa xác minh ở trạng thái DRAFT và không đưa vào
+                      kho truy xuất.
+                    </p>
+                  </div>
+                )}
                 <h3>
-                  Chunks có nguồn gốc (
+                  Đoạn trích đã truy về nguồn (
                   {selected?.total_count ?? snap.chunk_count})
                 </h3>
                 <div className="knowledge-chunks">
-                  {selected?.chunks.map((c) => (
-                    <article key={c.id}>
-                      <div className="knowledge-snapshot-heading">
-                        <strong>{c.citation}</strong>
-                        <Badge
-                          tone={
-                            c.review_status === "APPROVED" ? "green" : "amber"
-                          }
-                        >
-                          {c.review_status}
-                        </Badge>
-                        <Badge>{c.citation_precision}</Badge>
-                      </div>
-                      <p className="knowledge-excerpt">{c.content}</p>
-                      <small>
-                        Chunk SHA {c.chunk_content_hash?.slice(0, 18)}… ·{" "}
-                        {c.topic}
-                      </small>
-                    </article>
-                  ))}
+                  {selected?.chunks.map((c) => {
+                    const anchorUrl = safeRegulatoryAnchor(c.source_anchor);
+                    const additionalTopics =
+                      c.topics?.filter((topic) => topic !== c.topic) ?? [];
+                    const paragraphPath = c.paragraph_path?.length
+                      ? c.paragraph_path.map((part) => `(${part})`).join("")
+                      : c.paragraph_path === undefined
+                        ? "Not recorded"
+                        : c.citation_precision === "unresolved"
+                          ? "Unresolved"
+                          : "None · section-level chunk";
+                    return (
+                      <article key={c.id}>
+                        <div className="knowledge-snapshot-heading">
+                          <strong>{c.citation}</strong>
+                          <Badge
+                            tone={
+                              c.review_status === "APPROVED"
+                                ? "green"
+                                : c.review_status === "DRAFT"
+                                  ? "amber"
+                                  : "neutral"
+                            }
+                          >
+                            {c.review_status}
+                          </Badge>
+                          <Badge
+                            tone={
+                              c.citation_precision === "unresolved"
+                                ? "red"
+                                : "blue"
+                            }
+                          >
+                            Precision · {c.citation_precision}
+                          </Badge>
+                        </div>
+                        <p className="knowledge-excerpt">{c.content}</p>
+                        {c.citation_precision === "unresolved" && (
+                          <div className="knowledge-chunk-warning">
+                            <strong>Expert review required.</strong> No
+                            paragraph path has been verified; the citation is
+                            section-level only. Do not infer a subsection from
+                            this excerpt.
+                          </div>
+                        )}
+                        <dl className="knowledge-chunk-provenance">
+                          <div>
+                            <dt>Review status</dt>
+                            <dd>{c.review_status}</dd>
+                          </div>
+                          <div>
+                            <dt>Citation precision</dt>
+                            <dd>
+                              {citationPrecisionLabels[c.citation_precision] ??
+                                c.citation_precision}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Topic</dt>
+                            <dd>
+                              <code>{c.topic || "Not recorded"}</code>
+                              {additionalTopics.length ? (
+                                <span> · {additionalTopics.join(", ")}</span>
+                              ) : null}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Paragraph path</dt>
+                            <dd>{paragraphPath}</dd>
+                          </div>
+                          <div className="knowledge-chunk-provenance-wide">
+                            <dt>Chunk SHA-256</dt>
+                            <dd>
+                              <code>
+                                {c.chunk_content_hash || "Not recorded"}
+                              </code>
+                            </dd>
+                          </div>
+                          <div className="knowledge-chunk-provenance-wide">
+                            <dt>Source anchor</dt>
+                            <dd>
+                              {anchorUrl ? (
+                                <a
+                                  href={anchorUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                >
+                                  {c.source_anchor}
+                                </a>
+                              ) : (
+                                <code>{c.source_anchor || "Not recorded"}</code>
+                              )}
+                            </dd>
+                          </div>
+                          {c.hierarchy?.length ? (
+                            <div className="knowledge-chunk-provenance-wide">
+                              <dt>Parsed hierarchy</dt>
+                              <dd>
+                                {c.hierarchy
+                                  .map((node) =>
+                                    [node.type, node.identifier, node.heading]
+                                      .filter(Boolean)
+                                      .join(" "),
+                                  )
+                                  .join(" › ")}
+                              </dd>
+                            </div>
+                          ) : null}
+                          {c.chunk_key && (
+                            <div>
+                              <dt>Chunk key</dt>
+                              <dd>
+                                <code>{c.chunk_key}</code>
+                              </dd>
+                            </div>
+                          )}
+                          {typeof c.sequence === "number" && (
+                            <div>
+                              <dt>Sequence · XML tag</dt>
+                              <dd>
+                                {c.sequence} · {c.xml_tag ?? "Not recorded"}
+                              </dd>
+                            </div>
+                          )}
+                        </dl>
+                      </article>
+                    );
+                  })}
                 </div>
                 {selected && selected.total_count > 50 && (
                   <div className="knowledge-pagination">

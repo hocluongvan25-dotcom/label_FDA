@@ -63,7 +63,10 @@ export function ProductsTable({
       .filter((r) => r.product_id === p.id)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
   const all = data.products;
-  const needs = all.filter((p) => latest(p) && needsAction(latest(p).status));
+  const needs = all.filter((p) => {
+    const review = latest(p);
+    return !!review && needsAction(review.status, review.triage_route);
+  });
   const done = all.filter((p) => latest(p) && isCompleted(latest(p).status));
   const filtered = all
     .filter((p) => {
@@ -73,7 +76,7 @@ export function ProductsTable({
       const org = data.organizations.find((o) => o.id === p.organization_id);
       return (
         (tab === "all" ||
-          (tab === "action" && needsAction(s)) ||
+          (tab === "action" && needsAction(s, r?.triage_route)) ||
           (tab === "completed" && isCompleted(s))) &&
         (status === "all" || status === s) &&
         (severity === "all" ||

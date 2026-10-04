@@ -35,16 +35,17 @@ export function exemptionPrecheck(product: Product) {
   if (!product.exemption_requested)
     return {
       status: "NOT_REQUESTED",
-      reason: "Chưa đề nghị đánh giá exemption.",
+      reason: "Chưa yêu cầu đánh giá điều kiện miễn trừ.",
     };
   if (product.employee_fte === null || product.expected_us_units_12m === null)
     return {
       status: "INSUFFICIENT_INFORMATION",
-      reason: "Cần số FTE và số đơn vị bán tại Hoa Kỳ trong 12 tháng.",
+      reason:
+        "Cần số nhân viên quy đổi tương đương toàn thời gian (FTE) và số đơn vị bán tại Hoa Kỳ trong 12 tháng.",
     };
   return {
     status: "HUMAN_REVIEW_REQUIRED",
-    reason: `Dữ liệu khai báo: ${product.employee_fte} FTE; ${product.expected_us_units_12m.toLocaleString("vi-VN")} đơn vị/12 tháng. Chưa xác định điều kiện miễn. Cần đối chiếu claim, loại sản phẩm, thời kỳ và hồ sơ theo nguồn hiện hành.`,
+    reason: `Dữ liệu khai báo: ${product.employee_fte} FTE; ${product.expected_us_units_12m.toLocaleString("vi-VN")} đơn vị/12 tháng. Chưa xác định điều kiện miễn trừ. Cần đối chiếu các tuyên bố trên nhãn, loại sản phẩm, thời kỳ và hồ sơ theo nguồn hiện hành.`,
   };
 }
 
@@ -106,7 +107,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           file_id: "",
           page: 1,
           bbox: null,
-          text: `Claim khách hàng khai báo: ${c}`,
+          text: `Tuyên bố trên nhãn do khách hàng khai báo: ${c}`,
           kind: "dossier" as const,
         },
       })),
@@ -141,7 +142,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           issue = {
             title: "Chưa phát hiện tên gọi thực phẩm",
             description:
-              "Không đọc được statement of identity trong phạm vi các panel đã xử lý. Đây là kiểm tra sự hiện diện, chưa đánh giá kích thước chữ hoặc vị trí.",
+              "Không đọc được tên gọi thực phẩm (statement of identity) trong các vùng nhãn đã xử lý. Đây là kiểm tra sự hiện diện, chưa đánh giá kích thước chữ hoặc vị trí.",
             evidence: [evidenceFor("statement_of_identity")],
           };
         break;
@@ -152,7 +153,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           issue = {
             title: "Chưa phát hiện khối lượng tịnh",
             description:
-              "Chưa tìm thấy net quantity trên nhãn đã đọc. Không suy đoán từ khối lượng khách hàng nhập.",
+              "Chưa tìm thấy khối lượng tịnh trên nhãn đã đọc. Không suy đoán từ khối lượng khách hàng nhập.",
             evidence: [evidenceFor("net_quantity")],
           };
         else if (
@@ -163,7 +164,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
         )
           issue = {
             title: "Khối lượng tịnh cần đối chiếu",
-            description: `Nội dung nhãn: “${v}”. ${normalized.consistent === false ? "Quy đổi hai đơn vị có độ lệch cần kiểm tra." : "Chưa đọc được đầy đủ cặp đơn vị metric / US customary."} Chuyên viên cần xác nhận cách áp dụng.`,
+            description: `Nội dung nhãn: “${v}”. ${normalized.consistent === false ? "Quy đổi hai đơn vị có độ lệch cần kiểm tra." : "Chưa đọc đủ cả đơn vị mét và đơn vị đo lường Hoa Kỳ."} Chuyên viên cần xác nhận cách áp dụng.`,
             evidence: [evidenceFor("net_quantity")],
             confidence: field("net_quantity")?.confidence,
           };
@@ -174,15 +175,15 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           issue = {
             title: "Chưa phát hiện danh sách nguyên liệu",
             description:
-              "Chưa đọc được ingredient list. Công thức trong hồ sơ không thay thế thông tin hiện diện trên nhãn.",
+              "Chưa đọc được danh sách nguyên liệu. Công thức trong hồ sơ không thay thế thông tin thể hiện trên nhãn.",
             evidence: [evidenceFor("ingredient_list")],
           };
         break;
       case "NUTRITION-001":
         if (!value("nutrition_facts"))
           issue = {
-            title: "Chưa phát hiện Nutrition Facts",
-            description: `Nutrition Facts chưa được phát hiện và điều kiện exemption chưa được chuyên viên xác định. ${exemptionPrecheck(product).reason}`,
+            title: "Chưa phát hiện bảng thông tin dinh dưỡng (Nutrition Facts)",
+            description: `Chưa phát hiện bảng thông tin dinh dưỡng và chuyên viên chưa xác định điều kiện miễn trừ. ${exemptionPrecheck(product).reason}`,
             evidence: [evidenceFor("nutrition_facts")],
           };
         break;
@@ -192,8 +193,8 @@ export function evaluateRules(input: RuleInput): RuleOutput {
         );
         if (c && product.exemption_requested)
           issue = {
-            title: "Nutrition claim có thể ảnh hưởng exemption",
-            description: `Claim “${c.text}” được phân loại sơ bộ là nutrient content claim, trong khi hồ sơ đề nghị exemption. Không được tự động coi sản phẩm đủ điều kiện miễn.`,
+            title: "Tuyên bố về dinh dưỡng có thể ảnh hưởng điều kiện miễn trừ",
+            description: `Tuyên bố “${c.text}” được phân loại sơ bộ là tuyên bố về hàm lượng dinh dưỡng, trong khi hồ sơ đề nghị miễn trừ. Không được tự động coi sản phẩm đủ điều kiện miễn.`,
             evidence: [c.evidence],
             confidence: c.confidence,
           };
@@ -206,7 +207,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
         if (missing.length)
           issue = {
             title: "Có dị nguyên chưa được đối chiếu trên nhãn",
-            description: `Công thức có nguồn dị nguyên: ${missing.join(", ")}. Chưa thấy khai báo tương ứng trong ingredient / allergen statement. Cần xác minh loại nguyên liệu và tên được khai báo.`,
+            description: `Công thức có nguồn dị nguyên: ${missing.join(", ")}. Chưa thấy khai báo tương ứng trong danh sách nguyên liệu hoặc thông tin dị nguyên. Cần xác minh loại nguyên liệu và tên khai báo.`,
             evidence: [
               evidenceFor("ingredient_list"),
               {
@@ -226,9 +227,10 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           !declaredAllergens.includes("sesame")
         )
           issue = {
-            title: "Sesame trong công thức chưa thấy trên nhãn",
+            title:
+              "Chưa thấy mè (sesame) trong thông tin nguyên liệu trên nhãn",
             description:
-              "Hồ sơ có mè / vừng / sesame, nhưng chưa tìm được khai báo tương ứng trong thông tin đọc từ nhãn. Bắt buộc chuyên viên đối chiếu.",
+              "Hồ sơ có mè / vừng (sesame), nhưng chưa tìm thấy thông tin khai báo tương ứng trên nhãn. Chuyên viên cần đối chiếu.",
             evidence: [
               evidenceFor("ingredient_list"),
               {
@@ -251,16 +253,8 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           };
         break;
       case "CLAIM-001": {
-        const c = classifications.find(
-          (c) => c.classification === "DISEASE_CLAIM",
-        );
-        if (c)
-          issue = {
-            title: "Claim có dấu hiệu liên quan bệnh lý",
-            description: `Phát hiện nội dung “${c.text}”. Bộ dò từ khóa xếp loại DISEASE_CLAIM; đây là cảnh báo rủi ro, không phải kết luận phân loại pháp lý. Bắt buộc chuyển chuyên gia.`,
-            evidence: [c.evidence],
-            confidence: c.confidence,
-          };
+        // Disease-claim detection is a triage signal only. Do not create an
+        // automated compliance/violation finding; triage sends it to an expert.
         break;
       }
       case "CLAIM-002": {
@@ -269,8 +263,8 @@ export function evaluateRules(input: RuleInput): RuleOutput {
         );
         if (c)
           issue = {
-            title: "Claim dinh dưỡng cần dữ liệu chứng minh",
-            description: `Claim “${c.text}” cần đối chiếu tiêu chí áp dụng, dữ liệu phân tích và Nutrition Facts. Không xác định đạt tiêu chí từ câu chữ đơn lẻ.`,
+            title: "Tuyên bố về dinh dưỡng cần dữ liệu chứng minh",
+            description: `Tuyên bố “${c.text}” cần được đối chiếu với tiêu chí áp dụng, dữ liệu phân tích và bảng thông tin dinh dưỡng (Nutrition Facts). Không kết luận đạt tiêu chí chỉ từ câu chữ.`,
             evidence: [c.evidence],
             confidence: c.confidence,
           };
@@ -286,9 +280,9 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           issue = {
             title:
               organic && !cert
-                ? "Organic claim chưa có hồ sơ chứng nhận"
-                : "Claim marketing cần chuyên gia xác minh",
-            description: `Nội dung “${c.text}”. ${organic && !cert ? "Chưa có thông tin organic certificate trong hồ sơ." : "Cần đối chiếu chứng cứ và phạm vi claim."} Hệ thống không kết luận organic certification; chuyển chuyên gia khi cần.`,
+                ? "Tuyên bố hữu cơ chưa có hồ sơ chứng nhận"
+                : "Tuyên bố quảng bá cần chuyên gia xác minh",
+            description: `Nội dung “${c.text}”. ${organic && !cert ? "Chưa có thông tin chứng nhận hữu cơ trong hồ sơ." : "Cần đối chiếu bằng chứng và phạm vi tuyên bố trên nhãn."} Hệ thống không tự kết luận về chứng nhận hữu cơ; chuyển chuyên gia khi cần.`,
             evidence: [c.evidence],
             severity: organic && !cert ? "critical" : "major",
           };
@@ -381,7 +375,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
           issue = {
             title: "Phân loại sản phẩm cần chuyên gia xác nhận",
             description:
-              "Phạm vi tự động chỉ hỗ trợ trà khô và trà túi lọc conventional food. Nhóm sản phẩm chưa rõ, ngoài phạm vi hoặc có disease claim phải được chuyên gia xác định trước.",
+              "Phạm vi xử lý tự động chỉ hỗ trợ trà khô và trà túi lọc thuộc nhóm thực phẩm thông thường. Nhóm sản phẩm chưa rõ, ngoài phạm vi hoặc có tuyên bố liên quan bệnh lý phải được chuyên gia xác định trước.",
             evidence: [
               {
                 file_id: "",
@@ -471,19 +465,31 @@ export function evaluateRules(input: RuleInput): RuleOutput {
     )
   )
     warnings.push(
-      "Có nguồn API đang ACTIVE nhưng effective date chưa xác định. Chuyên viên phải xác minh riêng; issue date không thay thế ngày hiệu lực.",
+      "Có nguồn qua API đang ACTIVE (đang có hiệu lực) nhưng chưa xác định ngày hiệu lực. Chuyên viên cần xác minh riêng; ngày ban hành không thay thế ngày hiệu lực.",
     );
   if (!latest.length)
     warnings.push(
-      "Không có quy tắc ACTIVE phù hợp. Không được trả kết luận không phát hiện vấn đề.",
+      "Không có quy tắc ACTIVE (đang có hiệu lực) phù hợp. Không được kết luận rằng không phát hiện vấn đề.",
     );
   if (
     latest.length < 15 &&
     ["dry_packaged_tea", "tea_bag"].includes(product.category)
   )
-    warnings.push("Bộ 15 quy tắc MVP chưa đầy đủ hoặc chưa có hiệu lực.");
+    warnings.push(
+      "Bộ 15 quy tắc trong phạm vi hỗ trợ hiện tại chưa đầy đủ hoặc chưa có hiệu lực.",
+    );
   if (findings.some((f) => f.citation_pending))
-    warnings.push("Có citation cần chuyên gia đối chiếu / phê duyệt nguồn.");
+    warnings.push(
+      "Có trích dẫn nguồn cần chuyên gia đối chiếu hoặc phê duyệt.",
+    );
+  if (classifications.some((c) => c.classification === "DISEASE_CLAIM"))
+    warnings.push(
+      "Phát hiện dấu hiệu tuyên bố liên quan bệnh lý; chuyển chuyên gia phân loại. Hệ thống không tự tạo phát hiện vi phạm pháp luật.",
+    );
+  if (classifications.some((c) => c.classification === "HEALTH_CLAIM"))
+    warnings.push(
+      "Phát hiện tuyên bố về sức khỏe; chuyển chuyên gia xác minh phạm vi và bằng chứng.",
+    );
   const uncertain = classifications.filter(
     (c) =>
       c.classification === "UNCERTAIN" ||
@@ -494,7 +500,7 @@ export function evaluateRules(input: RuleInput): RuleOutput {
   );
   if (uncertain.length)
     warnings.push(
-      `Claim cần chuyên gia phân loại: ${uncertain.map((c) => c.text).join("; ")}`,
+      `Tuyên bố trên nhãn cần chuyên gia phân loại: ${uncertain.map((c) => c.text).join("; ")}`,
     );
   if (!allObservedText.trim())
     warnings.push("Không có nội dung nhãn được xác minh.");
@@ -516,12 +522,12 @@ export function verifyFindings(
     /(?:FDA\s+(?:approved|certified)|guaranteed\s+customs\s+clearance|100%\s+legal|FDA has approved)/i;
   return findings.filter((f) => {
     if (f.organization_id !== product.organization_id)
-      throw new Error("Finding không cùng organization.");
-    if (!f.evidence.length) throw new Error("Finding thiếu evidence.");
+      throw new Error("Phát hiện không thuộc cùng tổ chức.");
+    if (!f.evidence.length) throw new Error("Phát hiện thiếu bằng chứng.");
     if (forbidden.test(f.title) || forbidden.test(f.suggested_action))
-      throw new Error("Finding có kết luận tuyệt đối bị cấm.");
+      throw new Error("Phát hiện có kết luận tuyệt đối bị cấm.");
     if (f.citation_ids.some((id) => !sources.some((s) => s.id === id)))
-      throw new Error("Citation nằm ngoài source registry.");
+      throw new Error("Trích dẫn nguồn nằm ngoài danh mục nguồn.");
     for (const e of f.evidence) {
       if (
         e.bbox &&
@@ -529,7 +535,7 @@ export function verifyFindings(
           e.bbox[2] <= e.bbox[0] ||
           e.bbox[3] <= e.bbox[1])
       )
-        throw new Error("Evidence bounding box không hợp lệ.");
+        throw new Error("Tọa độ vùng bằng chứng không hợp lệ.");
     }
     if (
       ["critical", "major"].includes(f.severity) &&
@@ -537,7 +543,7 @@ export function verifyFindings(
       !f.citation_pending
     )
       throw new Error(
-        "Finding quan trọng thiếu citation hoặc pending human review.",
+        "Phát hiện quan trọng thiếu trích dẫn nguồn hoặc chưa được chuyên viên xem xét.",
       );
     const key = `${f.rule_key}|${f.title}|${f.evidence.map((e) => e.text).join("|")}`;
     if (seen.has(key)) return false;

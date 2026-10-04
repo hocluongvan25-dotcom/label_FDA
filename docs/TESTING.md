@@ -2,11 +2,12 @@
 
 ## Automated local checks
 
-Verified: 122 tests (database 25, regulatory DB 17, regulatory clients/parser 24, regulatory orchestration 7, domain 32, native server 15, worker 2), 6 browser workflows in demo, TypeScript/lint and production compilation. Rotated PDF bbox and actual TIFF normalization are included. Browser tests start a fresh browser per case to isolate local OCR/PDF resources. No live Supabase or real ClamAV deployment was used.
+Verified: 135 tests (database 25, regulatory DB 17, regulatory clients/parser 24, regulatory orchestration 7, domain 32, native server 15, worker 2, pipeline status 13), 6 browser workflows in demo, TypeScript/lint and production compilation. Rotated PDF bbox and actual TIFF normalization are included. Browser tests start a fresh browser per case to isolate local OCR/PDF resources. No live Supabase or real ClamAV deployment was used.
 
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build`.
 - `npm run test:e2e`: Playwright browser installed on your machine.
 - `npm run test:e2e:bundled`: Linux fallback, npm-packaged Chromium + AL2023 NSS/NSPR libs; no browser CDN download. One worker; creates synthetic data only in demo.
+- `npm run doctor`: pre-flight check of a real deployment (Supabase env/connectivity, ClamAV reachability, rule counts, queue state, private buckets). Exits non-zero when a real self-check could not run; see [OPERATIONS.md](OPERATIONS.md).
 
 PGlite tests execute all three migrations with **pgcrypto + pgvector**, role/RLS and trigger semantics. Auth/Storage tables are shims, not an actual Supabase stack. Tests cover spoofed signup roles, tenant isolation, unaffiliated-member NULL role guards, restricted writes, independent legal approvals, frozen input/report, scan-gated Storage reads, leases/retry/dead-letter, transactional evidence validation and report conditions.
 

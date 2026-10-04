@@ -48,6 +48,7 @@ import {
 import { RULE_CATALOG } from "@/lib/regulatory";
 import { SEVERITY_META } from "@/lib/constants";
 import type { RegressionResult } from "@/lib/regression";
+import { REQUIRED_ACTIVE_RULES } from "@/lib/pipeline-status";
 
 const topicLabels: Record<string, string> = {
   identity: "Tên gọi thực phẩm",
@@ -676,6 +677,89 @@ export function SourcesPage() {
     </div>
   );
 }
+/**
+ * Activation runbook. The rule set is never activated automatically: fake law
+ * text, hashes or approvals would silently produce fake compliance results.
+ */
+function RulesActivationGuide({
+  active,
+  sourcesCurrent,
+}: {
+  active: number;
+  sourcesCurrent: number;
+}) {
+  const [open, setOpen] = useState(true);
+  const steps = [
+    {
+      title: "1. Có nguồn thật, còn hiệu lực",
+      body: `Chạy regulatory worker để đồng bộ eCFR (\`npm run regulatory:worker -- --schedule\`) tạo raw snapshot có hash + issue date và DRAFT chunks, hoặc đăng ký nguồn thủ công tại Nguồn tham chiếu (trích dẫn ≥ 80 ký tự, retrieved_at, canonical URL). Nguồn mới luôn ở DRAFT. Hiện có ${sourcesCurrent} nguồn hiện hành.`,
+    },
+    {
+      title: "2. Admin A kiểm tra checklist",
+      body: "Mở snapshot DRAFT trong Kho tri thức pháp quy: xác nhận 9 mục checklist (api_url, issue_date, source_title, hash, parser_complete, citations_traceable, jurisdiction, affected_rules, effective_date), phân loại thay đổi và ngày hiệu lực (hoặc đánh dấu chưa xác định kèm lý do).",
+    },
+    {
+      title: "3. Admin B kích hoạt độc lập",
+      body: "Một Regulatory Admin khác (không phải người tạo) kích hoạt snapshot: regression phải đạt trên cùng raw hash, parser và citation hợp lệ. Sau đó nguồn chuyển CURRENT và chunks được APPROVED.",
+    },
+    {
+      title: "4. Tạo / cập nhật đủ 15 rule draft",
+      body: "Tại trang này, mỗi rule gắn đúng nguồn CURRENT, condition/action hợp lệ và rule_key nằm trong 15 key của MVP (IDENTITY-001 … CLASS-001).",
+    },
+    {
+      title: "5. Chạy regression trên rule draft",
+      body: "15 fixture phải passed, test_hash khớp definition_hash và nguồn trích dẫn không được thay đổi trong lúc chạy.",
+    },
+    {
+      title: "6. Admin B duyệt rule",
+      body: "Người khác duyệt (không phải người tạo rule). Rule chuyển ACTIVE, phiên bản cũ được giữ lại. Không thể tự duyệt rule do mình tạo; System Admin không có quyền này.",
+    },
+    {
+      title: "7. Xác nhận trước khi nhận hồ sơ thật",
+      body: `Trang này phải hiển thị 15 rules active (đang có ${active}). Khi chưa đủ, review dừng ở SOURCE_UNAVAILABLE và hệ thống không được trả kết luận “không phát hiện vấn đề”.`,
+    },
+  ];
+  return (
+    <Card className="activation-guide">
+      <div className="card-header">
+        <h2>Hướng dẫn kích hoạt bộ quy tắc ({active}/15 đang hoạt động)</h2>
+        <button className="text-button" onClick={() => setOpen(!open)}>
+          {open ? "Thu gọn" : "Mở hướng dẫn"}
+        </button>
+      </div>
+      <div className="settings-card-body">
+        <InlineNotice tone="warning" icon={<CircleAlert size={16} />}>
+          Bộ quy tắc không bao giờ được kích hoạt tự động. Nội dung luật, hash
+          và chữ ký phê duyệt phải thật; hệ thống không tạo sẵn nội dung luật để
+          tránh kết luận tuân thủ giả.
+        </InlineNotice>
+        {open && (
+          <div className="guide-steps" style={{ marginTop: 22 }}>
+            {steps.map((s) => (
+              <div key={s.title}>
+                <span>
+                  <ClipboardCheck size={17} />
+                </span>
+                <div>
+                  <h3>{s.title}</h3>
+                  <p>{s.body}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 12, marginTop: 18 }}>
+          <Link href="/knowledge" className="btn btn-ghost">
+            Kho tri thức pháp quy <ArrowUpRight size={13} />
+          </Link>
+          <Link href="/sources" className="btn btn-ghost">
+            Nguồn tham chiếu <ArrowUpRight size={13} />
+          </Link>
+        </div>
+      </div>
+    </Card>
+  );
+}
 export function RulesPage() {
   const app = useApp();
   const [query, setQuery] = useState("");
@@ -815,6 +899,15 @@ export function RulesPage() {
           phiên bản lưu lịch sử
         </div>
       </div>
+      {app.data.rules.filter((r) => r.status === "ACTIVE").length <
+        REQUIRED_ACTIVE_RULES && (
+        <RulesActivationGuide
+          active={app.data.rules.filter((r) => r.status === "ACTIVE").length}
+          sourcesCurrent={
+            app.data.sources.filter((s) => sourceIsCurrent(s)).length
+          }
+        />
+      )}
       <Card>
         <div className="table-tabs" style={{ paddingTop: 18 }}>
           {[

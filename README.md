@@ -47,7 +47,7 @@ Demo có thể đổi giữa 5 persona tại **Cài đặt**. Đây là mô ph�
 
    Cần **2 Regulatory Admin độc lập** để tạo và duyệt nguồn/rules. System Admin không có quyền thay đổi luật hoặc duyệt báo cáo.
 
-5. Cấu hình **ClamAV** cho worker. Có thể dùng `docker compose -f docker-compose.dev.yml up -d` trên máy có Docker, rồi đặt `CLAMAV_HOST=127.0.0.1`, `CLAMAV_PORT=3310` nếu worker chạy cùng máy. Trong triển khai container/cloud, dùng endpoint scanner private có thể truy cập từ worker.
+5. Cấu hình **ClamAV** cho worker. Cách gọn nhất: `docker compose -f docker-compose.worker.yml up -d --build` chạy luôn worker + ClamAV, hoặc chỉ scanner bằng `docker compose -f docker-compose.dev.yml up -d` rồi đặt `CLAMAV_HOST=127.0.0.1`, `CLAMAV_PORT=3310`. Trong triển khai container/cloud, dùng endpoint scanner private có thể truy cập từ worker.
 6. Khởi động app và một worker riêng:
 
    ```bash
@@ -56,19 +56,28 @@ Demo có thể đổi giữa 5 persona tại **Cài đặt**. Đây là mô ph�
    npm run worker
    ```
 
-7. Registry seed chỉ có **12 nguồn / 15 rules ở DRAFT**. Regulatory Admin phải đăng ký văn bản thực đã truy xuất, ngày hiệu lực/retrieval và duyệt độc lập; chạy regression rồi duyệt rules. Không có nội dung luật, hash hay phê duyệt thật bị bịa trong seed. Khi chưa đủ 15 rules hiện hành, review là `SOURCE_UNAVAILABLE`, không thể phát hành kết luận không phát hiện vấn đề.
+7. Kiểm tra điều kiện chạy thật trước khi nhận hồ sơ:
+
+   ```bash
+   npm run doctor
+   ```
+
+   Doctor báo thiếu env, ClamAV chưa reachable, hàng đợi kẹt, bucket storage và số rules ACTIVE. Trong app, panel **Phân tích nhãn theo từng bước** hiển thị cùng nguyên nhân (thiếu worker, lease hết hạn, job lỗi, thiếu scanner, thiếu rules) kèm cách xử lý. Xem [Operations](docs/OPERATIONS.md).
+
+8. Registry seed chỉ có **12 nguồn / 15 rules ở DRAFT**. Regulatory Admin phải đăng ký văn bản thực đã truy xuất, ngày hiệu lực/retrieval và duyệt độc lập; chạy regression rồi duyệt rules. Không có nội dung luật, hash hay phê duyệt thật bị bịa trong seed. Khi chưa đủ 15 rules hiện hành, review là `SOURCE_UNAVAILABLE`, không thể phát hành kết luận không phát hiện vấn đề.
 
 Hướng dẫn API-first mới: [Regulatory Knowledge](docs/REGULATORY_KNOWLEDGE.md) (worker/schedule, nguồn, QA/activation, staging XML thật).
 
-Hướng dẫn chi tiết: [Setup](docs/SETUP.md), [Security](docs/SECURITY.md), [API](docs/API.md), [Providers](docs/PROVIDERS.md), [Testing](docs/TESTING.md). Bản hướng dẫn nhanh cũng có tại `/setup-guide.md` trong app.
+Hướng dẫn chi tiết: [Setup](docs/SETUP.md), [Operations](docs/OPERATIONS.md), [Security](docs/SECURITY.md), [API](docs/API.md), [Providers](docs/PROVIDERS.md), [Testing](docs/TESTING.md). Bản hướng dẫn nhanh cũng có tại `/setup-guide.md` trong app.
 
 ### Phân biệt các môi trường
 
-| Môi trường                 | Lưu dữ liệu                            | OCR                                                           | Malware                    | Báo cáo                                                             |
-| -------------------------- | -------------------------------------- | ------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------- |
-| Demo                       | localStorage + IndexedDB trên thiết bị | Local/PDF text layer                                          | Không có; chỉ file tin cậy | Gắn DEMO, không dùng cho hồ sơ thực                                 |
-| Supabase thực              | Postgres + private Storage, RLS        | Local mặc định, hoặc approved facade                          | ClamAV bắt buộc            | Reviewer duyệt; clean scan + nguồn/rules hiện hành + artifacts thật |
-| Dev opt-in chưa có scanner | Supabase dev riêng                     | Cho phép thử pipeline bằng `ALLOW_UNSCANNED_DEV_UPLOADS=true` | Gắn `dev_unscanned`        | **Không** đọc/signed URL hoặc phê duyệt báo cáo thật                |
+| Môi trường                  | Lưu dữ liệu                            | OCR                                                           | Malware                    | Báo cáo                                                             |
+| --------------------------- | -------------------------------------- | ------------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------- |
+| Demo                        | localStorage + IndexedDB trên thiết bị | Local/PDF text layer                                          | Không có; chỉ file tin cậy | Gắn DEMO, không dùng cho hồ sơ thực                                 |
+| Supabase thực               | Postgres + private Storage, RLS        | Local mặc định, hoặc approved facade                          | ClamAV bắt buộc            | Reviewer duyệt; clean scan + nguồn/rules hiện hành + artifacts thật |
+| Supabase thực, thiếu worker | Postgres + private Storage, RLS        | Không chạy                                                    | Không chạy                 | Review đứng 0% · mọi bước “Chờ”; panel pipeline nêu rõ nguyên nhân  |
+| Dev opt-in chưa có scanner  | Supabase dev riêng                     | Cho phép thử pipeline bằng `ALLOW_UNSCANNED_DEV_UPLOADS=true` | Gắn `dev_unscanned`        | **Không** đọc/signed URL hoặc phê duyệt báo cáo thật                |
 
 App **không tự fallback** từ cấu hình Supabase bị lỗi sang dữ liệu mẫu. `NEXT_PUBLIC_ENABLE_DEMO=false` tắt nút demo và yêu cầu cấu hình thực đầy đủ.
 
@@ -76,7 +85,7 @@ App **không tự fallback** từ cấu hình Supabase bị lỗi sang dữ li�
 
 Import repository vào Vercel từ nhánh đã có mã nguồn; chọn **Next.js**, **Node.js 22.x**, install `npm ci`, build `npm run build`. Giữ Output Directory mặc định. Có thể mở demo bằng `NEXT_PUBLIC_ENABLE_DEMO=true` mà chưa cần Supabase.
 
-Để tiếp nhận dữ liệu thật, cấu hình Supabase và server secrets trong Vercel Environment Variables, tắt demo, chạy migrations và triển khai **label/OCR worker, regulatory worker, ClamAV riêng**; Vercel không tự chạy các process này. Chi tiết: [Setup → Web app trên Vercel](docs/SETUP.md#7-web-app-trên-vercel).
+Để tiếp nhận dữ liệu thật, cấu hình Supabase và server secrets trong Vercel Environment Variables, tắt demo, chạy migrations và triển khai **label/OCR worker, regulatory worker, ClamAV riêng**; Vercel không tự chạy các process này. Nếu chưa có worker, mọi review sẽ đứng ở 0% — đây là hành vi đúng, không phải lỗi treo: [Operations](docs/OPERATIONS.md). Chi tiết: [Setup → Web app trên Vercel](docs/SETUP.md#7-web-app-trên-vercel).
 
 ## Đồng bộ pháp quy qua API
 
@@ -92,7 +101,7 @@ Mở **Kho tri thức pháp quy** (`/knowledge`). Admin A sync → raw + DRAFT c
 
 ## Kiểm tra chất lượng
 
-Đã chạy thành công: TypeScript, lint, production build; **122 unit/integration-local tests** và **6 Playwright workflows** (desktop/mobile, reviewer/evidence, customer/autosave/upload, human PDF/JSON report, independent source approval, API knowledge workflow). Browser tests chạy ở demo; không thay thế staging Supabase thật.
+Đã chạy thành công: TypeScript, lint, production build; **135 unit/integration-local tests** và **6 Playwright workflows** (desktop/mobile, reviewer/evidence, customer/autosave/upload, human PDF/JSON report, independent source approval, API knowledge workflow). Browser tests chạy ở demo; không thay thế staging Supabase thật.
 
 ```bash
 npm run typecheck

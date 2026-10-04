@@ -13,12 +13,15 @@ import type {
   LabelFile,
   LabelVersion,
   Organization,
+  PipelineDiagnostics,
   Product,
   RegulatorySource,
   Report,
   Review,
+  ReviewJob,
   AuditEntry,
 } from "@/lib/types";
+import { sourceIsCurrent } from "@/lib/utils";
 
 export class HttpError extends Error {
   constructor(
@@ -187,9 +190,60 @@ export async function readJson(
     throw new HttpError(400, "Payload cần là JSON object.");
   return result as Record<string, unknown>;
 }
-export async function workspace(
+/**
+ * Queue + registry state that explains why a review is (or is not) moving.
+ * Counts respect RLS, so a customer only ever sees the queue of their own org.
+ */
+async function pipelineDiagnostics(
   ctx: ServerContext,
-): Promise<{ data: AppData; actor: Actor }> {
+  input: { rules: ComplianceRule[]; sources: RegulatorySource[] },
+): Promise<PipelineDiagnostics> {
+  const [outputs, queue] = await Promise.all([
+    ctx.db
+      .from("pipeline_outputs")
+      .select("created_at")
+      .order("created_at", { ascending: false })
+      .limit(1),
+    ctx.db
+      .from("pipeline_jobs")
+      .select("status,updated_at")
+      .order("updated_at", { ascending: true })
+      .limit(1000),
+  ]);
+  // Never report "no worker" for what is actually an unreadable queue.
+  if (outputs.error) throw dbError(outputs.error);
+  if (queue.error) throw dbError(queue.error);
+  const rows = (queue.data ?? []) as {
+    status: string;
+    updated_at: string;
+  }[];
+  const queued = rows.filter((r) => r.status === "queued");
+  const oldest = queued[0]?.updated_at ?? null;
+  return {
+    scanner_configured: !!process.env.CLAMAV_HOST,
+    rules_active: input.rules.filter((r) => r.status === "ACTIVE").length,
+    rules_total: input.rules.length,
+    sources_current: input.sources.filter((s) => sourceIsCurrent(s)).length,
+    worker_last_activity: outputs.data?.[0]?.created_at ?? null,
+    queue: {
+      queued: queued.length,
+      running: rows.filter((r) => r.status === "running").length,
+      dead_letter: rows.filter((r) => r.status === "dead_letter").length,
+      oldest_queued_age_seconds: oldest
+        ? Math.max(
+            0,
+            Math.round((Date.now() - new Date(oldest).getTime()) / 1000),
+          )
+        : null,
+    },
+  };
+}
+
+export async function workspace(ctx: ServerContext): Promise<{
+  data: AppData;
+  actor: Actor;
+  diagnostics: PipelineDiagnostics;
+}> {
   const tables = [
     "organizations",
     "organization_members",
@@ -281,8 +335,33 @@ export async function workspace(
   const sources = ctx.actor.role.startsWith("customer")
     ? await rpc<RegulatorySource[]>(ctx.db, "vexim_customer_citations", {})
     : (values.regulatory_sources as RegulatorySource[]);
+  const rules = values.compliance_rules as ComplianceRule[];
+  const rawReviews = values.reviews as Review[];
+  const [diagnostics, jobs] = await Promise.all([
+    pipelineDiagnostics(ctx, { rules, sources }),
+    (async () => {
+      if (!rawReviews.length) return [];
+      const { data, error } = await ctx.db
+        .from("pipeline_jobs")
+        .select(
+          "id,review_id,status,attempts,current_stage,locked_until,next_run_at,last_error,created_at,updated_at",
+        )
+        .in(
+          "review_id",
+          rawReviews.map((r) => r.id),
+        )
+        .limit(2000);
+      if (error) throw dbError(error);
+      return (data ?? []) as (ReviewJob & { review_id: string })[];
+    })(),
+  ]);
+  const reviews = rawReviews.map((r) => ({
+    ...r,
+    job: jobs.find((j) => j.review_id === r.id) ?? null,
+  }));
   return {
     actor: ctx.actor,
+    diagnostics,
     data: {
       staff: ctx.actor.role.startsWith("customer")
         ? []
@@ -298,13 +377,13 @@ export async function workspace(
       members,
       products,
       labelVersions: labels,
-      reviews: values.reviews as Review[],
+      reviews,
       findings: values.findings as Finding[],
       requests: values.customer_requests as CustomerRequest[],
       reports: values.reports as Report[],
       audit: values.audit_logs as AuditEntry[],
       sources,
-      rules: (values.compliance_rules as ComplianceRule[]).map((r) => ({
+      rules: rules.map((r) => ({
         ...r,
         created_by: r.created_by ?? "seed",
       })),

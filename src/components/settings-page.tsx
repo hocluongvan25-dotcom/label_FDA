@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import {
   CheckCheck,
   CircleAlert,
@@ -32,6 +33,7 @@ import {
 import { ROLE_LABELS } from "@/lib/constants";
 import { api, isSupabaseConfigured } from "@/lib/supabase";
 import { downloadJson, errorMessage } from "@/lib/utils";
+import { formatAge } from "@/lib/pipeline-status";
 import type { Role } from "@/lib/types";
 
 export function SettingsPage() {
@@ -43,8 +45,17 @@ export function SettingsPage() {
   const [health, setHealth] = useState<{
     database: string;
     scanner_configured: boolean;
+    scanner_reachable: boolean;
+    scanner_detail: string;
     worker_last_activity: string | null;
     local_ocr: boolean;
+    rules: { active: number; total: number };
+    queue: {
+      queued: number;
+      running: number;
+      dead_letter: number;
+      oldest_queued_age_seconds: number | null;
+    };
   } | null>(null);
   const roles: { role: Role; name: string; alternate?: boolean }[] = [
     { role: "reviewer", name: "Linh Nguyễn" },
@@ -239,19 +250,41 @@ export function SettingsPage() {
                 </a>
               </div>
               {health && (
-                <div style={{ marginTop: 18 }}>
+                <div style={{ marginTop: 18, display: "grid", gap: 10 }}>
                   <InlineNotice
-                    tone={health.scanner_configured ? "success" : "warning"}
+                    tone={
+                      health.scanner_configured && health.scanner_reachable
+                        ? "success"
+                        : "warning"
+                    }
                   >
                     Database: {health.database} · Malware scanner:{" "}
                     {health.scanner_configured
-                      ? "Đã cấu hình (cần kiểm thử kết nối)"
+                      ? health.scanner_reachable
+                        ? "Đã kết nối"
+                        : "Đã cấu hình nhưng không kết nối được"
                       : "Chưa cấu hình"}{" "}
                     · Worker:{" "}
                     {health.worker_last_activity
                       ? `Có hoạt động gần nhất ${health.worker_last_activity}`
                       : "Chưa có tác vụ được xử lý"}
                   </InlineNotice>
+                  <p className="tiny muted">
+                    {health.scanner_detail}
+                    <br />
+                    Quy tắc ACTIVE: {health.rules.active}/{health.rules.total} ·
+                    Hàng đợi: {health.queue.queued} chờ · {health.queue.running}{" "}
+                    đang chạy · {health.queue.dead_letter} dead-letter
+                    {health.queue.oldest_queued_age_seconds
+                      ? ` · lâu nhất ${formatAge(
+                          health.queue.oldest_queued_age_seconds,
+                        )}`
+                      : ""}
+                    .{" "}
+                    <Link href="/rules" className="text-button">
+                      Hướng dẫn kích hoạt quy tắc
+                    </Link>
+                  </p>
                 </div>
               )}
             </div>

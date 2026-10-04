@@ -17,7 +17,8 @@
     "test:e2e:bundled": "node scripts/test-browser-bundled.mjs",
     "staff": "tsx scripts/provision-staff.ts",
     "format": "prettier --write src scripts tests *.ts *.mts *.mjs README.md docs",
-    "regulatory:worker": "tsx scripts/regulatory-worker.ts"
+    "regulatory:worker": "tsx scripts/regulatory-worker.ts",
+    "doctor": "tsx scripts/doctor.ts"
   },
   "dependencies": {
     "@fontsource/be-vietnam-pro": "^5.3.0",

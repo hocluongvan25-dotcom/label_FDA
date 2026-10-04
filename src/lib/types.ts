@@ -190,6 +190,33 @@ export interface PipelineStep {
   attempts: number;
   completed_at?: string;
 }
+export type PipelineJobStatus =
+  "queued" | "running" | "retry" | "completed" | "dead_letter";
+/** Queue row behind a review. Absent means no worker job exists for it. */
+export interface ReviewJob {
+  id: string;
+  status: PipelineJobStatus;
+  attempts: number;
+  current_stage: string;
+  locked_until: string | null;
+  next_run_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+export interface PipelineDiagnostics {
+  scanner_configured: boolean;
+  rules_active: number;
+  rules_total: number;
+  sources_current: number;
+  worker_last_activity: string | null;
+  queue: {
+    queued: number;
+    running: number;
+    dead_letter: number;
+    oldest_queued_age_seconds: number | null;
+  };
+}
 export interface Review {
   id: string;
   organization_id: string;
@@ -209,6 +236,7 @@ export interface Review {
   approved_at: string | null;
   approval_comment: string | null;
   dossier_snapshot?: Product;
+  job?: ReviewJob | null;
   rule_snapshot?: {
     rule_key: string;
     version: number;

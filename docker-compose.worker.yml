@@ -1,0 +1,61 @@
+# Runs the trusted pipeline worker together with its malware scanner.
+#
+# The web app (Vercel or a local `npm run dev`) never executes these steps, so
+# without this stack every review stays at 0% with all stages pending.
+#
+# Usage:
+#   cp .env.example .env.local   # fill in Supabase URL + service-role key
+#   docker compose -f docker-compose.worker.yml up -d --build
+#   npm run doctor               # verify scanner, queue, rules
+#   docker compose -f docker-compose.worker.yml logs -f worker
+#
+# ClamAV downloads its signature database on first start; the healthcheck can
+# take a few minutes before the worker is allowed to start.
+services:
+  clamav:
+    image: clamav/clamav:stable
+    restart: unless-stopped
+    expose:
+      - "3310"
+    volumes:
+      - clamav-definitions:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdscan", "--ping", "1"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 180s
+    mem_limit: 2g
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "worker"]
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+      CLAMAV_HOST: clamav
+      CLAMAV_PORT: "3310"
+    depends_on:
+      clamav:
+        condition: service_healthy
+
+  # Optional: regulatory ingestion (eCFR / Federal Register). Start with
+  # `docker compose -f docker-compose.worker.yml --profile regulatory up -d`.
+  regulatory-worker:
+    profiles: ["regulatory"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["npm", "run", "regulatory:worker", "--", "--schedule"]
+    restart: unless-stopped
+    env_file:
+      - .env.local
+    environment:
+      NODE_ENV: production
+
+volumes:
+  clamav-definitions:

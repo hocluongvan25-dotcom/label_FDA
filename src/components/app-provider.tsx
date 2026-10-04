@@ -18,6 +18,7 @@ import type {
   LabelVersion,
   Member,
   Organization,
+  PipelineDiagnostics,
   PipelineStep,
   Product,
   RegulatorySource,
@@ -80,10 +81,12 @@ interface Toast {
 interface WorkspaceResponse {
   data: AppData;
   actor: Actor;
+  diagnostics: PipelineDiagnostics;
 }
 interface ContextValue {
   data: AppData;
   actor: Actor;
+  diagnostics: PipelineDiagnostics | null;
   mode: "demo" | "supabase";
   loading: boolean;
   authenticated: boolean;
@@ -170,6 +173,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [diagnostics, setDiagnostics] = useState<PipelineDiagnostics | null>(
+    null,
+  );
   const running = useRef(new Set<string>());
   const persistWarning = useRef(false);
   const notify = useCallback(
@@ -241,12 +247,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const result = await api<WorkspaceResponse>("/workspace");
     replace(result.data);
     updateActor(result.actor);
+    setDiagnostics(result.diagnostics ?? null);
     setAuthenticated(true);
     setError(null);
   }, [replace, updateActor]);
   const loadDemo = useCallback(() => {
     modeRef.current = "demo";
     setMode("demo");
+    setDiagnostics(null);
     let d = createSeedData();
     let a = { ...DEMO_ACTOR };
     try {
@@ -1738,6 +1746,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       value={{
         data: visible,
         actor,
+        diagnostics,
         mode,
         loading,
         authenticated,

@@ -98,7 +98,7 @@ export function LabelViewer({
         (normalized ?? file).scan_status !== "clean"
       )
         throw new Error(
-          "Chờ malware scan hoàn tất trước khi mở nhãn. File chưa được xác minh không được cấp quyền đọc.",
+          "File gốc phải được quét mã độc thật và có trạng thái sạch trước khi mở file gốc hoặc chạy OCR. Bước quét chỉ chạy trong worker (cần ClamAV); nếu trạng thái đứng lâu, xem nguyên nhân trong panel “Phân tích nhãn theo từng bước”.",
         );
       let blob = await appRef.current.getFileBlob(normalized ?? file);
       if (

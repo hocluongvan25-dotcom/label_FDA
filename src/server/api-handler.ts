@@ -31,6 +31,7 @@ import {
   type ServerContext,
 } from "./context";
 import { ensureReportFiles, reportSignedUrl } from "./report-files";
+import { pingScanner } from "./virus-scan";
 
 const uuid = z.string().uuid();
 const draftSchema = z.object({
@@ -239,11 +240,48 @@ export async function apiHandler(request: Request, segments: string[]) {
         .order("created_at", { ascending: false })
         .limit(1);
       if (error) throw dbError(error);
+      const [rules, jobs] = await Promise.all([
+        ctx.db
+          .from("compliance_rules")
+          .select("status,effective_from,effective_to"),
+        ctx.db
+          .from("pipeline_jobs")
+          .select("status,updated_at")
+          .order("updated_at", { ascending: true })
+          .limit(1000),
+      ]);
+      if (rules.error) throw dbError(rules.error);
+      if (jobs.error) throw dbError(jobs.error);
+      const scanner = await pingScanner();
+      const rows = (jobs.data ?? []) as {
+        status: string;
+        updated_at: string;
+      }[];
+      const queued = rows.filter((r) => r.status === "queued");
+      const oldest = queued[0]?.updated_at ?? null;
       result = {
         database: "connected",
-        scanner_configured: !!process.env.CLAMAV_HOST,
-        worker_last_activity: data?.[0]?.created_at ?? null,
+        scanner_configured: scanner.configured,
+        scanner_reachable: scanner.reachable,
+        scanner_detail: scanner.detail,
         local_ocr: process.env.OCR_PROVIDER !== "approved",
+        worker_last_activity: data?.[0]?.created_at ?? null,
+        rules: {
+          active: (rules.data ?? []).filter((r) => r.status === "ACTIVE")
+            .length,
+          total: rules.data?.length ?? 0,
+        },
+        queue: {
+          queued: queued.length,
+          running: rows.filter((r) => r.status === "running").length,
+          dead_letter: rows.filter((r) => r.status === "dead_letter").length,
+          oldest_queued_age_seconds: oldest
+            ? Math.max(
+                0,
+                Math.round((Date.now() - new Date(oldest).getTime()) / 1000),
+              )
+            : null,
+        },
       };
     } else if (
       method === "GET" &&

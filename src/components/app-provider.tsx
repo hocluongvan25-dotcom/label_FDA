@@ -23,11 +23,29 @@ import type {
   RegulatorySource,
   Report,
   Review,
+  ReviewParticipant,
+  ReviewPartyDecisionEntry,
+  ReviewPartyDecisionType,
   ReviewStatus,
   Role,
+  VeximReviewRequest,
 } from "@/lib/types";
 import { DEMO_ACTOR, PIPELINE_LABELS, MAX_FILES } from "@/lib/constants";
-import { createSeedData, sampleFields } from "@/lib/seed";
+import {
+  createSeedData,
+  refreshDraftOnlyDemoFixture,
+  sampleFields,
+} from "@/lib/seed";
+import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
+import { isSyntheticDemoReview } from "@/lib/demo-review";
+import { localLabelBundleSha256 } from "@/lib/collaboration";
+import {
+  DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+  createDemoMockScanRecord,
+  demoMockScannedFileIdsFor,
+  parseDemoMockScanSession,
+  type DemoMockScanRecord,
+} from "@/lib/demo-mock-scan";
 import { canAccessOrg, assertCan, assertOrg } from "@/lib/permissions";
 import {
   uid,
@@ -53,12 +71,83 @@ import {
 import { clearLocalFiles, getLocalFile, putLocalFile } from "@/lib/storage";
 import { extractFromOcr } from "@/lib/extraction";
 import { evaluateRules } from "@/lib/rules-engine";
+import { evaluateTriage } from "@/lib/triage";
 import { validateIntake, findingPatchSchema } from "@/lib/validation";
 import { buildReportSnapshot } from "@/lib/reports";
 import { assertTransition } from "@/lib/workflow";
 import { runRuleRegression, type RegressionResult } from "@/lib/regression";
 
 const STORAGE_KEY = "vexim-workspace-v3";
+const DEMO_FIXTURE_REVISION_KEY = "vexim-demo-fixture-revision";
+const DEMO_FIXTURE_REVISION = "tea-review-draft-15-v1";
+function normalizeOrphanedHumanReviews(data: AppData): AppData {
+  const requests = data.veximReviewRequests ?? [];
+  return {
+    ...data,
+    reviews: data.reviews.map((review) =>
+      review.status === "HUMAN_REVIEW" &&
+      !requests.some(
+        (request) =>
+          request.review_id === review.id &&
+          request.organization_id === review.organization_id &&
+          request.label_version_id === review.label_version_id &&
+          request.status === "IN_PROGRESS" &&
+          /^[a-f0-9]{64}$/.test(request.artwork_hash),
+      )
+        ? { ...review, status: "MANUAL_ESCALATION_REQUIRED" }
+        : review,
+    ),
+  };
+}
+function ensureDemoReviewOwners(data: AppData): {
+  data: AppData;
+  changed: boolean;
+} {
+  const participants = Array.isArray(data.reviewParticipants)
+    ? [...data.reviewParticipants]
+    : [];
+  let changed = !Array.isArray(data.reviewParticipants);
+  for (const review of data.reviews) {
+    const existingOwner = participants.some(
+      (participant) =>
+        participant.review_id === review.id &&
+        participant.organization_id === review.organization_id &&
+        participant.party_role === "label_owner" &&
+        participant.status !== "removed",
+    );
+    if (existingOwner) continue;
+    const product = data.products.find(
+      (candidate) => candidate.id === review.product_id,
+    );
+    const organization = data.organizations.find(
+      (candidate) => candidate.id === review.organization_id,
+    );
+    const timestamp = review.created_at || now();
+    const ownerActorId = product?.created_by || "demo-owner-backfill";
+    participants.push({
+      id: uid(),
+      review_id: review.id,
+      organization_id: review.organization_id,
+      organization_name_snapshot:
+        organization?.name ?? "Doanh nghiệp sở hữu nhãn",
+      party_role: "label_owner",
+      status: "active",
+      invited_by: ownerActorId,
+      invited_at: timestamp,
+      activated_by: ownerActorId,
+      activated_at: timestamp,
+      fsvp_attested_by: null,
+      fsvp_attested_at: null,
+      fsvp_attestation_note: null,
+      created_at: timestamp,
+    });
+    changed = true;
+  }
+  return {
+    data: changed ? { ...data, reviewParticipants: participants } : data,
+    changed,
+  };
+}
 const empty: AppData = {
   organizations: [],
   members: [],
@@ -69,7 +158,10 @@ const empty: AppData = {
   sources: [],
   rules: [],
   requests: [],
+  veximReviewRequests: [],
   reports: [],
+  reviewParticipants: [],
+  partyDecisions: [],
   audit: [],
 };
 interface Toast {
@@ -85,6 +177,7 @@ interface ContextValue {
   data: AppData;
   actor: Actor;
   mode: "demo" | "supabase";
+  demoMockScans: Record<string, DemoMockScanRecord>;
   loading: boolean;
   authenticated: boolean;
   error: string | null;
@@ -96,6 +189,7 @@ interface ContextValue {
   signOut: () => Promise<void>;
   setDemoRole: (role: Role, alternate?: boolean) => void;
   resetDemo: () => Promise<void>;
+  runDemoMockScan: (reviewId: string) => Promise<DemoMockScanRecord>;
   saveProduct: (product: Product) => Promise<Product>;
   uploadVersion: (productId: string, files: File[]) => Promise<LabelVersion>;
   submitReview: (labelId: string) => Promise<Review>;
@@ -122,13 +216,41 @@ interface ContextValue {
     docs: string[],
   ) => Promise<void>;
   resolveRequest: (requestId: string) => Promise<void>;
+  requestVeximReview: (reviewId: string) => Promise<VeximReviewRequest>;
+  startVeximReviewRequest: (requestId: string) => Promise<VeximReviewRequest>;
   assignReview: (reviewId: string) => Promise<void>;
   transitionReview: (
     reviewId: string,
     status: ReviewStatus,
     reason: string,
   ) => Promise<void>;
-  approveReport: (reviewId: string, comment: string) => Promise<Report>;
+  inviteReviewParticipant: (
+    reviewId: string,
+    organizationContactEmail: string,
+    partyRole: "commercial_importer" | "fsvp_importer",
+  ) => Promise<void>;
+  acceptReviewParticipant: (
+    participantId: string,
+    attestsFsvp?: boolean,
+    attestationNote?: string,
+  ) => Promise<void>;
+  removeReviewParticipant: (
+    participantId: string,
+    reason: string,
+  ) => Promise<void>;
+  shareReview: (reviewId: string, comment: string) => Promise<void>;
+  recordPartyDecision: (
+    reviewId: string,
+    partyRole: "label_owner" | "commercial_importer",
+    decision: ReviewPartyDecisionType,
+    comment: string,
+    proposedChanges?: ReviewPartyDecisionEntry["proposed_changes"],
+  ) => Promise<void>;
+  approveReport: (
+    reviewId: string,
+    requestId: string,
+    comment: string,
+  ) => Promise<Report>;
   downloadReport: (reportId: string, format: "pdf" | "json") => Promise<void>;
   getFileBlob: (file: LabelFile) => Promise<Blob>;
   logFileAccess: (
@@ -160,6 +282,10 @@ export const useApp = () => {
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [rawData, setData] = useState<AppData>(empty);
   const dataRef = useRef<AppData>(empty);
+  const [demoMockScans, setDemoMockScans] = useState<
+    Record<string, DemoMockScanRecord>
+  >({});
+  const demoMockScansRef = useRef<Record<string, DemoMockScanRecord>>({});
   const [actor, setActor] = useState<Actor>(DEMO_ACTOR);
   const actorRef = useRef<Actor>(DEMO_ACTOR);
   const [mode, setMode] = useState<"demo" | "supabase">(
@@ -191,6 +317,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dataRef.current = d;
     setData(d);
   }, []);
+  const replaceDemoMockScans = useCallback(
+    (scans: Record<string, DemoMockScanRecord>, persistSession = true) => {
+      demoMockScansRef.current = scans;
+      setDemoMockScans(scans);
+      if (persistSession && typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(
+            DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+            JSON.stringify(scans),
+          );
+        } catch {
+          // Session persistence is optional; the current tab can still test the flow.
+        }
+      }
+    },
+    [],
+  );
+  const clearDemoMockScans = useCallback(() => {
+    demoMockScansRef.current = {};
+    setDemoMockScans({});
+    if (typeof window !== "undefined") {
+      try {
+        window.sessionStorage.removeItem(DEMO_MOCK_SCAN_SESSION_STORAGE_KEY);
+      } catch {
+        // The mock state is also cleared from memory.
+      }
+    }
+  }, []);
+  const restoreDemoMockScans = useCallback(
+    (data: AppData) => {
+      let serialized: string | null = null;
+      try {
+        serialized = window.sessionStorage.getItem(
+          DEMO_MOCK_SCAN_SESSION_STORAGE_KEY,
+        );
+      } catch {
+        // The mock scan remains available for this tab, even without sessionStorage.
+      }
+      replaceDemoMockScans(parseDemoMockScanSession(data, serialized));
+    },
+    [replaceDemoMockScans],
+  );
   const commit = useCallback(
     (fn: (draft: AppData) => void) => {
       const next = structuredClone(dataRef.current);
@@ -239,16 +407,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const loadRemote = useCallback(async () => {
     const result = await api<WorkspaceResponse>("/workspace");
+    clearDemoMockScans();
     replace(result.data);
     updateActor(result.actor);
     setAuthenticated(true);
     setError(null);
-  }, [replace, updateActor]);
+  }, [clearDemoMockScans, replace, updateActor]);
   const loadDemo = useCallback(() => {
     modeRef.current = "demo";
     setMode("demo");
-    let d = createSeedData();
+    const seeded = createSeedData();
+    let d = seeded;
     let a = { ...DEMO_ACTOR };
+    let hasSavedDemoData = false;
+    let refreshFixture = false;
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null");
       if (
@@ -258,10 +430,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ) {
         d = saved.data;
         a = saved.actor ?? a;
+        hasSavedDemoData = true;
       }
+      refreshFixture =
+        localStorage.getItem(DEMO_FIXTURE_REVISION_KEY) !==
+        DEMO_FIXTURE_REVISION;
     } catch {
       /* An invalid local snapshot is replaced by an explicitly marked demo. */
     }
+    if (refreshFixture && hasSavedDemoData)
+      d = refreshDraftOnlyDemoFixture(d, seeded);
+    // Older local snapshots have no independent Vexim request collection. Never
+    // reconstruct requests from triage_route or legacy expert_review_status.
+    d.veximReviewRequests = Array.isArray(d.veximReviewRequests)
+      ? d.veximReviewRequests
+      : [];
+    // The legacy expert field is preserved but never used as request state.
+    // Orphaned old HUMAN_REVIEW states display as manual-attention recommendations.
+    d = normalizeOrphanedHumanReviews(d);
+    // Mirror the database owner-participant trigger for existing local Demo reviews.
+    const ownerMigration = ensureDemoReviewOwners(d);
+    d = ownerMigration.data;
     // A browser job cannot survive closing the tab. Never pretend that it is still running.
     d.reviews = d.reviews.map((r) =>
       r.status === "PROCESSING" && !r.idempotency_key.startsWith("seed-")
@@ -278,10 +467,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     );
     replace(d);
     updateActor(a);
+    restoreDemoMockScans(d);
+    if (refreshFixture || !hasSavedDemoData || ownerMigration.changed) {
+      try {
+        localStorage.setItem(
+          STORAGE_KEY,
+          JSON.stringify({ version: 3, data: d, actor: a }),
+        );
+        localStorage.setItem(DEMO_FIXTURE_REVISION_KEY, DEMO_FIXTURE_REVISION);
+      } catch {
+        /* Retry the narrow fixture migration on the next demo load. */
+      }
+    }
     setAuthenticated(true);
     setError(null);
     setLoading(false);
-  }, [replace, updateActor]);
+  }, [replace, restoreDemoMockScans, updateActor]);
   useEffect(() => {
     if (!isSupabaseConfigured()) {
       if (isSupabaseRequested()) {
@@ -346,6 +547,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           loadRemote().catch(() => undefined);
         },
       )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "review_participants" },
+        () => {
+          loadRemote().catch(() => undefined);
+        },
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "review_party_decisions" },
+        () => {
+          loadRemote().catch(() => undefined);
+        },
+      )
       .subscribe();
     // Realtime is optional; one interval also handles deployments without publication setup.
     const timer = setInterval(() => {
@@ -370,6 +585,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     loadDemo();
   };
   const signOut = async () => {
+    clearDemoMockScans();
     if (isSupabaseConfigured()) {
       modeRef.current = "supabase";
       setMode("supabase");
@@ -399,22 +615,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         name: "Quang Lê",
         email: "quang.le@vexim.example",
       },
-      customer_admin: {
-        id: "demo-customer-admin",
-        name: "Minh Anh",
-        email: "contact@annhientea.example",
-      },
-      customer_contributor: {
-        id: "demo-contributor",
-        name: "Tuấn Anh",
-        email: "tuan.anh@annhientea.example",
-      },
+      customer_admin: alternate
+        ? {
+            id: "demo-customer-admin-importer",
+            name: "Hoàng Nam",
+            email: "export@moctraviet.example",
+          }
+        : {
+            id: "demo-customer-admin",
+            name: "Minh Anh",
+            email: "contact@annhientea.example",
+          },
+      customer_contributor: alternate
+        ? {
+            id: "demo-contributor-importer",
+            name: "Khánh Linh",
+            email: "linh@moctraviet.example",
+          }
+        : {
+            id: "demo-contributor",
+            name: "Tuấn Anh",
+            email: "tuan.anh@annhientea.example",
+          },
     };
     const next = {
       ...identities[role],
       role,
       organization_id: role.startsWith("customer")
-        ? (dataRef.current.organizations[0]?.id ?? null)
+        ? (dataRef.current.organizations[alternate ? 1 : 0]?.id ?? null)
         : null,
     };
     updateActor(next);
@@ -425,9 +653,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (running.current.size)
       throw new Error("Hãy chờ tác vụ OCR kết thúc trước khi đặt lại dữ liệu.");
     await clearLocalFiles();
+    clearDemoMockScans();
     localStorage.removeItem(STORAGE_KEY);
     updateActor(DEMO_ACTOR);
-    const d = createSeedData();
+    const d = ensureDemoReviewOwners(
+      normalizeOrphanedHumanReviews(createSeedData()),
+    ).data;
     commit((draft) => Object.assign(draft, d));
     notify("Đã đặt lại không gian dữ liệu mẫu.");
   };
@@ -570,6 +801,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const getFileBlob = async (file: LabelFile) => {
     if (modeRef.current === "supabase") {
+      const demoPreviewUrl = demoArtworkPreviewUrl(file);
+      if (demoPreviewUrl) {
+        const response = await fetch(demoPreviewUrl);
+        if (!response.ok)
+          throw new Error("Không tải được artwork SVG mẫu đã allowlist.");
+        const blob = await response.blob();
+        if (
+          blob.size !== file.size ||
+          (await sha256(await blob.arrayBuffer())) !== file.sha256
+        )
+          throw new Error("Artwork SVG mẫu không khớp SHA-256 đã allowlist.");
+        return blob;
+      }
       const result = await api<{ url: string }>(`/files/${file.id}/signed-url`);
       const response = await fetch(result.url);
       if (!response.ok)
@@ -642,6 +886,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
     let fields: ExtractedField[] = label.extracted_fields;
+    let localOcrConfidence: number | null = null;
+    let localOcrPages: number | null = null;
     try {
       if (start <= 0) {
         changeStep(
@@ -718,6 +964,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               message,
             ),
           );
+          localOcrConfidence = ocr.confidence;
+          localOcrPages = ocr.pages;
           fields = extractFromOcr(ocr);
           changeStep(
             "ocr",
@@ -745,6 +993,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
       if (!fields.length)
         throw new Error("Chưa có structured extraction. Chạy lại từ OCR.");
+      if (localOcrConfidence === null) {
+        const observed = fields.filter(
+          (field) => field.value && field.evidence.kind === "observed",
+        );
+        localOcrConfidence = observed.length
+          ? observed.reduce((sum, field) => sum + field.confidence, 0) /
+            observed.length
+          : null;
+        localOcrPages =
+          label.normalized_files.length ||
+          label.original_files.reduce((sum, file) => sum + file.page_count, 0);
+      }
       changeStep("rules", "running", 75, "Chạy bộ quy tắc đang có hiệu lực.");
       const current = dataRef.current;
       const output = evaluateRules({
@@ -771,6 +1031,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             content_hash: s.content_hash,
           })),
       }));
+      const decision = evaluateTriage({
+        product,
+        fields,
+        findings: output.findings,
+        rules: current.rules,
+        sources: current.sources,
+        rule_snapshot: executed,
+        parser_quality: [],
+        ocr_confidence: localOcrConfidence,
+        ocr_pages: localOcrPages,
+        expected_pages: label.original_files.reduce(
+          (sum, file) => sum + file.page_count,
+          0,
+        ),
+      });
+      const completionWarnings = [
+        ...new Set([...output.warnings, ...decision.customer_questions]),
+      ];
+      const routeStatus = {
+        OUT_OF_SCOPE: "MANUAL_ESCALATION_REQUIRED",
+        BLOCKED_REGULATORY_SOURCE: "SOURCE_UNAVAILABLE",
+        EXPERT_REVIEW_REQUIRED: "MANUAL_ESCALATION_REQUIRED",
+        NEEDS_CUSTOMER_INFORMATION: "WAITING_FOR_CUSTOMER",
+        AUTO_SCREENED: "AI_REVIEW_READY",
+      } as const;
       commit((d) => {
         d.findings = [
           ...d.findings.filter((f) => f.review_id !== reviewId),
@@ -778,7 +1063,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         ];
         const rv = d.reviews.find((r) => r.id === reviewId)!;
         rv.rule_snapshot = executed;
-        rv.missing_information = output.warnings;
+        rv.missing_information = completionWarnings;
+        rv.triage_route = decision.triage_route;
+        rv.overall_result = decision.overall_result;
+        rv.report_status = decision.report_status;
+        rv.triage_reasons = decision.reasons;
+        rv.triage_risk_score = decision.risk_score;
+        rv.triage_policy_version = decision.policy_version;
+        rv.triage_evaluated_at = decision.evaluated_at;
+        rv.status = routeStatus[decision.triage_route];
+        rv.progress = 100;
+        rv.updated_at = now();
+        rv.error_message =
+          decision.triage_route === "BLOCKED_REGULATORY_SOURCE"
+            ? "Nguồn hoặc bộ quy tắc chưa đủ điều kiện phát hành sàng lọc tự động."
+            : decision.triage_route === "OUT_OF_SCOPE"
+              ? "Sản phẩm nằm ngoài phạm vi tự động hiện được hỗ trợ."
+              : null;
+        d.labelVersions.find((v) => v.id === label.id)!.status = "under_review";
         for (const fired of output.rules_executed.filter((e) => e.fired))
           log(
             d,
@@ -788,50 +1090,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             `${fired.rule_key} v${fired.version} phát hiện rủi ro · ${product.name}`,
             product.organization_id,
           );
-      });
-      changeStep(
-        "rules",
-        "complete",
-        88,
-        `${output.rules_executed.length} quy tắc; ${output.findings.length} finding.`,
-      );
-      changeStep(
-        "verification",
-        "running",
-        94,
-        "Kiểm tra evidence, citation, scope và kết luận tuyệt đối.",
-      );
-      changeStep(
-        "verification",
-        "complete",
-        100,
-        "Kết quả phải được chuyên viên xác nhận; không có tự động phê duyệt.",
-      );
-      commit((d) => {
-        const rv = d.reviews.find((r) => r.id === reviewId)!;
-        rv.status =
-          product.classification_status !== "conventional_food"
-            ? "MANUAL_ESCALATION_REQUIRED"
-            : executed.length < 15
-              ? "SOURCE_UNAVAILABLE"
-              : "HUMAN_REVIEW";
-        rv.progress = 100;
-        rv.updated_at = now();
-        if (executed.length < 15)
-          rv.error_message =
-            "Bộ quy tắc hiện hành chưa đủ 15 rules. Cần Regulatory Admin xác minh và kích hoạt trước khi kết luận.";
-        d.labelVersions.find((v) => v.id === label.id)!.status = "under_review";
         log(
           d,
           "review.processed",
           "review",
           reviewId,
-          `Hoàn thành kiểm tra sơ bộ · ${product.name} · ${output.findings.length} finding`,
+          `Hoàn thành triage · ${product.name} · ${decision.triage_route}`,
           product.organization_id,
-          { ruleset: executed, warnings: output.warnings },
+          {
+            ruleset: executed,
+            warnings: completionWarnings,
+            triage_route: decision.triage_route,
+            overall_result: decision.overall_result,
+            reasons: decision.reasons,
+            policy_version: decision.policy_version,
+          },
         );
       });
-      notify(`Đã phân tích ${product.name}. Cần chuyên viên rà soát.`, "info");
+      const notification =
+        decision.triage_route === "AUTO_SCREENED"
+          ? "Đã phân luồng sàng lọc tự động; artifact chưa được phát hành trong chế độ mẫu."
+          : decision.triage_route === "NEEDS_CUSTOMER_INFORMATION"
+            ? "Cần bổ sung thông tin trước khi tiếp tục."
+            : decision.triage_route === "BLOCKED_REGULATORY_SOURCE"
+              ? "Nguồn hoặc quy tắc chưa đủ điều kiện; đã chặn phát hành tự động."
+              : decision.triage_route === "OUT_OF_SCOPE"
+                ? "Sản phẩm ngoài phạm vi hỗ trợ tự động."
+                : "Hồ sơ cần chuyên gia rà soát.";
+      notify(notification, "info");
     } catch (e) {
       const message = errorMessage(e);
       commit((d) => {
@@ -900,14 +1186,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       rule_snapshot: [],
       missing_information: [],
     };
+    const ownerOrganization = dataRef.current.organizations.find(
+      (organization) => organization.id === product.organization_id,
+    );
+    const ownerActorId = product.created_by || actorRef.current.id;
+    const ownerParticipant: ReviewParticipant = {
+      id: uid(),
+      review_id: review.id,
+      organization_id: product.organization_id,
+      organization_name_snapshot:
+        ownerOrganization?.name ?? "Doanh nghiệp sở hữu nhãn",
+      party_role: "label_owner",
+      status: "active",
+      invited_by: ownerActorId,
+      invited_at: review.created_at,
+      activated_by: ownerActorId,
+      activated_at: review.created_at,
+      fsvp_attested_by: null,
+      fsvp_attested_at: null,
+      fsvp_attestation_note: null,
+      created_at: review.created_at,
+    };
     commit((d) => {
       d.reviews.unshift(review);
+      d.reviewParticipants ??= [];
+      d.reviewParticipants.push(ownerParticipant);
       log(
         d,
         "review.started",
         "review",
         review.id,
-        `Bắt đầu kiểm tra · ${product.name} · nhãn v${label.version}`,
+        `Bắt đầu Self-check · ${product.name} · nhãn v${label.version}`,
         product.organization_id,
       );
     });
@@ -920,6 +1229,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   ) => {
     assertCan(actorRef.current, "review");
     const r = reviewFor(reviewId);
+    if (isSyntheticDemoReview(r))
+      throw new Error(
+        "Đây là review demo tĩnh: không chạy OCR, triage hoặc rules trên fixture.",
+      );
     if (["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED"].includes(r.status))
       throw new Error(
         "Review đã đóng. Hãy tải phiên bản nhãn mới để giữ lịch sử báo cáo.",
@@ -952,6 +1265,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         "Review này đang xử lý hoặc đã đóng; không thể chỉnh sửa finding.",
       );
   };
+  const editableVeximReview = (r: Review) => {
+    editableReview(r);
+    const request = dataRef.current.veximReviewRequests?.find(
+      (candidate) =>
+        candidate.review_id === r.id &&
+        candidate.label_version_id === r.label_version_id &&
+        candidate.status === "IN_PROGRESS",
+    );
+    if (!request)
+      throw new Error(
+        "Chỉ được xử lý Vexim Review khi có yêu cầu đang xử lý cho đúng phiên bản nhãn.",
+      );
+    return request;
+  };
   const patchFinding = async (
     id: string,
     patch: Pick<Finding, "severity" | "status" | "reviewer_comment"> & {
@@ -963,7 +1290,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const f = dataRef.current.findings.find((f) => f.id === id);
     if (!f) throw new Error("Finding không tồn tại.");
     const review = reviewFor(f.review_id);
-    editableReview(review);
+    editableVeximReview(review);
     if (
       patch.citation_ids?.some(
         (id) => !dataRef.current.sources.some((s) => s.id === id),
@@ -1000,7 +1327,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const addFinding = async (finding: Finding) => {
     assertCan(actorRef.current, "review");
     const review = reviewFor(finding.review_id);
-    editableReview(review);
+    editableVeximReview(review);
     if (
       !finding.title.trim() ||
       finding.description.trim().length < 10 ||
@@ -1052,7 +1379,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const review = dataRef.current.reviews.find(
       (r) => r.label_version_id === labelId,
     );
-    if (review) editableReview(review);
+    if (review) editableVeximReview(review);
     if (modeRef.current === "supabase") {
       await remoteAction(
         `/label-versions/${labelId}/fields/${fieldId}`,
@@ -1099,7 +1426,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (message.trim().length < 10)
       throw new Error("Nhập yêu cầu ít nhất 10 ký tự.");
     const review = reviewFor(reviewId);
-    editableReview(review);
+    editableVeximReview(review);
     if (modeRef.current === "supabase") {
       await remoteAction(`/reviews/${reviewId}/requests`, {
         message,
@@ -1150,7 +1477,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         )
       )
         d.reviews.find((r) => r.id === request.review_id)!.status =
-          "HUMAN_REVIEW";
+          "AI_REVIEW_READY";
       log(
         d,
         "information.resolved",
@@ -1161,6 +1488,176 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
   };
+  const requestVeximReview = async (reviewId: string) => {
+    const review = reviewFor(reviewId);
+    if (modeRef.current === "supabase")
+      return remoteAction<VeximReviewRequest>(
+        `/reviews/${reviewId}/vexim-review-requests`,
+        {},
+      );
+
+    const current = actorRef.current;
+    if (current.role !== "customer_admin" || !current.organization_id)
+      throw new Error(
+        "Chỉ quản trị viên của Chủ nhãn hoặc Nhà nhập khẩu thương mại mới có thể gửi yêu cầu Vexim Review.",
+      );
+    if (isSyntheticDemoReview(review))
+      throw new Error(
+        "Hồ sơ mẫu DRAFT này chỉ dành cho rà soát độc lập; không thể gửi yêu cầu Vexim Review.",
+      );
+    if (
+      dataRef.current.veximReviewRequests.some(
+        (request) => request.review_id === reviewId,
+      )
+    )
+      throw new Error(
+        "Lượt rà soát này đã có yêu cầu Vexim Review cho phiên bản nhãn này.",
+      );
+    if (dataRef.current.reports.some((report) => report.review_id === reviewId))
+      throw new Error(
+        "Lượt rà soát này đã có báo cáo; không thể gửi yêu cầu mới cho phiên bản này.",
+      );
+
+    const participants = dataRef.current.reviewParticipants ?? [];
+    const owner = current.organization_id === review.organization_id;
+    const importer = participants.some(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.organization_id === current.organization_id &&
+        participant.party_role === "commercial_importer" &&
+        participant.status === "active",
+    );
+    const requestedRole = owner
+      ? "label_owner"
+      : importer &&
+          (review.collaboration_status ?? "not_shared") !== "not_shared"
+        ? "commercial_importer"
+        : null;
+    if (!requestedRole)
+      throw new Error(
+        "Chỉ Chủ nhãn hoặc Nhà nhập khẩu thương mại đang tham gia lượt rà soát này mới có thể yêu cầu Vexim Review.",
+      );
+    if (
+      review.status === "PROCESSING" ||
+      review.pipeline.length < 5 ||
+      review.pipeline.some((step) => step.status !== "complete")
+    )
+      throw new Error(
+        "Quy trình Self-check phải hoàn tất trước khi gửi yêu cầu Vexim Review.",
+      );
+
+    const label = dataRef.current.labelVersions.find(
+      (candidate) => candidate.id === review.label_version_id,
+    );
+    const originals =
+      label?.original_files.filter((file) => file.kind === "original") ?? [];
+    if (
+      !label ||
+      !originals.length ||
+      originals.some(
+        (file) =>
+          file.scan_status !== "clean" || !/^[a-f0-9]{64}$/.test(file.sha256),
+      )
+    )
+      throw new Error(
+        "Mọi file nhãn gốc phải hoàn tất quét phần mềm độc hại thật trước khi gửi yêu cầu Vexim Review.",
+      );
+    const artworkHash = await localLabelBundleSha256(label);
+    const request: VeximReviewRequest = {
+      id: uid(),
+      review_id: review.id,
+      organization_id: review.organization_id,
+      requested_by: current.id,
+      requested_role: requestedRole,
+      requested_at: now(),
+      label_version_id: review.label_version_id,
+      artwork_hash: artworkHash,
+      status: "REQUESTED",
+      reviewer_id: null,
+      started_at: null,
+      completed_at: null,
+    };
+    commit((d) => {
+      if (d.veximReviewRequests.some((entry) => entry.review_id === reviewId))
+        throw new Error(
+          "Lượt rà soát này đã có yêu cầu Vexim Review cho phiên bản nhãn này.",
+        );
+      d.veximReviewRequests.unshift(request);
+      log(
+        d,
+        "vexim_review.requested",
+        "vexim_review_request",
+        request.id,
+        "Owner/importer chủ động yêu cầu Vexim Review cho đúng phiên bản nhãn.",
+        review.organization_id,
+        {
+          requested_role: requestedRole,
+          label_version_id: request.label_version_id,
+          artwork_hash: request.artwork_hash,
+        },
+      );
+    });
+    return request;
+  };
+  const startVeximReviewRequest = async (requestId: string) => {
+    assertCan(actorRef.current, "review");
+    if (modeRef.current === "supabase")
+      return remoteAction<VeximReviewRequest>(
+        `/vexim-review-requests/${requestId}/start`,
+        {},
+      );
+    const request = dataRef.current.veximReviewRequests.find(
+      (candidate) => candidate.id === requestId,
+    );
+    if (!request || request.status !== "REQUESTED")
+      throw new Error(
+        "Chỉ có thể bắt đầu Vexim Review cho yêu cầu đã gửi và đang chờ tiếp nhận.",
+      );
+    const review = reviewFor(request.review_id);
+    if (request.label_version_id !== review.label_version_id)
+      throw new Error(
+        "Yêu cầu không còn gắn với đúng phiên bản nhãn của lượt rà soát.",
+      );
+    const label = dataRef.current.labelVersions.find(
+      (candidate) => candidate.id === request.label_version_id,
+    );
+    if (!label)
+      throw new Error("Không tìm thấy phiên bản nhãn gắn với yêu cầu.");
+    const currentHash = await localLabelBundleSha256(label);
+    if (currentHash !== request.artwork_hash)
+      throw new Error(
+        "Mã SHA-256 của file nhãn đã thay đổi sau khi gửi yêu cầu.",
+      );
+    const startedAt = now();
+    let updated: VeximReviewRequest | undefined;
+    commit((d) => {
+      const stored = d.veximReviewRequests.find(
+        (candidate) => candidate.id === requestId,
+      );
+      if (!stored || stored.status !== "REQUESTED")
+        throw new Error("Một chuyên viên khác đã bắt đầu xử lý yêu cầu này.");
+      Object.assign(stored, {
+        status: "IN_PROGRESS" as const,
+        reviewer_id: actorRef.current.id,
+        started_at: startedAt,
+      });
+      d.reviews.find((candidate) => candidate.id === review.id)!.status =
+        "HUMAN_REVIEW";
+      d.reviews.find((candidate) => candidate.id === review.id)!.assigned_to =
+        actorRef.current.id;
+      updated = structuredClone(stored);
+      log(
+        d,
+        "vexim_review.started",
+        "vexim_review_request",
+        stored.id,
+        "Chuyên viên bắt đầu xử lý yêu cầu Vexim Review đã được gửi.",
+        stored.organization_id,
+        { label_version_id: stored.label_version_id },
+      );
+    });
+    return updated!;
+  };
   const assignReview = async (reviewId: string) => {
     assertCan(actorRef.current, "review");
     const review = reviewFor(reviewId);
@@ -1168,6 +1665,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED"].includes(review.status)
     )
       throw new Error("Review đã đóng.");
+    if (
+      !dataRef.current.veximReviewRequests?.some(
+        (request) =>
+          request.review_id === reviewId &&
+          request.label_version_id === review.label_version_id &&
+          ["REQUESTED", "IN_PROGRESS"].includes(request.status),
+      )
+    )
+      throw new Error(
+        "Chỉ có thể phân công sau khi đã có yêu cầu Vexim Review.",
+      );
     if (modeRef.current === "supabase") {
       await remoteAction(`/reviews/${reviewId}/assign`, {
         reviewer_id: actorRef.current.id,
@@ -1217,12 +1725,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       throw new Error(
         "Trạng thái này phải đi qua pipeline hoặc phê duyệt báo cáo.",
       );
+    if (actorRef.current.role === "reviewer" && status !== "ARCHIVED") {
+      const request = dataRef.current.veximReviewRequests?.find(
+        (candidate) =>
+          candidate.review_id === reviewId &&
+          candidate.label_version_id === review.label_version_id &&
+          candidate.status === "IN_PROGRESS",
+      );
+      if (!request)
+        throw new Error(
+          "Chỉ được rà soát Vexim khi có yêu cầu đang xử lý cho đúng phiên bản nhãn.",
+        );
+    }
     if (modeRef.current === "supabase") {
       await remoteAction(`/reviews/${reviewId}`, { status, reason }, "PATCH");
       return;
     }
     commit((d) => {
-      d.reviews.find((r) => r.id === reviewId)!.status = status;
+      const current = d.reviews.find((r) => r.id === reviewId)!;
+      current.status = status;
       log(
         d,
         "review.status_changed",
@@ -1234,19 +1755,519 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
   };
-  const approveReport = async (reviewId: string, comment: string) => {
+  const collaborationReviewFor = (reviewId: string) => {
+    const review = dataRef.current.reviews.find((r) => r.id === reviewId);
+    if (!review)
+      throw new Error("Không tìm thấy review hoặc chưa được chia sẻ.");
+    return review;
+  };
+  const requireDemoOrganizationAdmin = (organizationId: string) => {
+    const current = actorRef.current;
+    if (
+      current.role !== "system_admin" &&
+      (current.role !== "customer_admin" ||
+        current.organization_id !== organizationId)
+    )
+      throw new Error("Thao tác này cần quản trị viên của tổ chức liên quan.");
+  };
+  const runDemoMockScan = async (reviewId: string) => {
+    if (modeRef.current !== "demo")
+      throw new Error("Mock Scan chỉ khả dụng trong Demo cục bộ.");
+    const review = collaborationReviewFor(reviewId);
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const record = createDemoMockScanRecord(review, label, now());
+    replaceDemoMockScans({
+      ...demoMockScansRef.current,
+      [label.id]: record,
+    });
+    return record;
+  };
+  const inviteReviewParticipant = async (
+    reviewId: string,
+    organizationContactEmail: string,
+    partyRole: "commercial_importer" | "fsvp_importer",
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/participants`, {
+        organization_contact_email: organizationContactEmail,
+        party_role: partyRole,
+      });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const email = organizationContactEmail.trim().toLowerCase();
+    const emailParts = email.split("@");
+    if (
+      email.length > 254 ||
+      email.includes(" ") ||
+      emailParts.length !== 2 ||
+      !emailParts[0] ||
+      !emailParts[1]?.includes(".")
+    )
+      throw new Error("Nhập email liên hệ hợp lệ của tổ chức importer.");
+    const matches = dataRef.current.organizations.filter(
+      (organization) =>
+        organization.status === "active" &&
+        organization.contact_email.trim().toLowerCase() === email,
+    );
+    if (matches.length !== 1)
+      throw new Error(
+        "Không tìm thấy duy nhất một tổ chức đang hoạt động với email đã nhập.",
+      );
+    const target = matches[0];
+    if (target.id === review.organization_id)
+      throw new Error("Importer phải là một tổ chức khác với chủ nhãn.");
+    const prior = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.organization_id === target.id &&
+        participant.party_role === partyRole,
+    );
+    if (prior && prior.status !== "removed")
+      throw new Error("Tổ chức này đã được mời hoặc đang tham gia review.");
+    const timestamp = now();
+    const participant: ReviewParticipant = prior
+      ? {
+          ...prior,
+          organization_name_snapshot: target.name,
+          status: "invited",
+          invited_by: actorRef.current.id,
+          invited_at: timestamp,
+          activated_by: null,
+          activated_at: null,
+          fsvp_attested_by: null,
+          fsvp_attested_at: null,
+          fsvp_attestation_note: null,
+        }
+      : {
+          id: uid(),
+          review_id: reviewId,
+          organization_id: target.id,
+          organization_name_snapshot: target.name,
+          party_role: partyRole,
+          status: "invited",
+          invited_by: actorRef.current.id,
+          invited_at: timestamp,
+          activated_by: null,
+          activated_at: null,
+          fsvp_attested_by: null,
+          fsvp_attested_at: null,
+          fsvp_attestation_note: null,
+          created_at: timestamp,
+        };
+    commit((d) => {
+      d.reviewParticipants ??= [];
+      const existingIndex = d.reviewParticipants.findIndex(
+        (entry) => entry.id === participant.id,
+      );
+      if (existingIndex >= 0) d.reviewParticipants[existingIndex] = participant;
+      else d.reviewParticipants.push(participant);
+      log(
+        d,
+        "review.participant_invited",
+        "review",
+        reviewId,
+        `Đã mời ${target.name} tham gia review với vai trò ${partyRole}.`,
+        review.organization_id,
+        { participant_id: participant.id, party_role: partyRole },
+      );
+    });
+  };
+  const acceptReviewParticipant = async (
+    participantId: string,
+    attestsFsvp = false,
+    attestationNote = "",
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/review-participants/${participantId}/accept`, {
+        attests_fsvp: attestsFsvp,
+        attestation_note: attestationNote,
+      });
+      return;
+    }
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) => entry.id === participantId,
+    );
+    if (!participant || participant.status !== "invited")
+      throw new Error("Lời mời không còn ở trạng thái chờ chấp nhận.");
+    requireDemoOrganizationAdmin(participant.organization_id);
+    const note = attestationNote.trim();
+    if (participant.party_role === "fsvp_importer") {
+      if (!attestsFsvp || note.length < 10 || note.length > 5000)
+        throw new Error(
+          "Cần xác nhận rõ tư cách FSVP importer và nhập căn cứ ít nhất 10 ký tự.",
+        );
+    } else if (attestsFsvp || note) {
+      throw new Error(
+        "Vai trò commercial importer không tự xác nhận tư cách FSVP.",
+      );
+    }
+    const review = collaborationReviewFor(participant.review_id);
+    const timestamp = now();
+    commit((d) => {
+      const current = d.reviewParticipants!.find(
+        (entry) => entry.id === participantId,
+      )!;
+      Object.assign(current, {
+        status: "active",
+        activated_by: actorRef.current.id,
+        activated_at: timestamp,
+        fsvp_attested_by:
+          current.party_role === "fsvp_importer" ? actorRef.current.id : null,
+        fsvp_attested_at:
+          current.party_role === "fsvp_importer" ? timestamp : null,
+        fsvp_attestation_note:
+          current.party_role === "fsvp_importer" ? note : null,
+      });
+      log(
+        d,
+        "review.participant_accepted",
+        "review",
+        review.id,
+        "Đã chấp nhận lời mời tham gia review.",
+        review.organization_id,
+        { participant_id: participantId, party_role: current.party_role },
+      );
+    });
+  };
+  const removeReviewParticipant = async (
+    participantId: string,
+    reason: string,
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(
+        `/review-participants/${participantId}`,
+        { reason },
+        "DELETE",
+      );
+      return;
+    }
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) => entry.id === participantId,
+    );
+    if (!participant || participant.party_role === "label_owner")
+      throw new Error("Không thể xóa participant chủ sở hữu nhãn.");
+    const review = collaborationReviewFor(participant.review_id);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const note = reason.trim();
+    if (note.length < 5 || note.length > 5000)
+      throw new Error("Nhập lý do thu hồi quyền từ 5 đến 5.000 ký tự.");
+    if (participant.status === "removed") return;
+    commit((d) => {
+      d.reviewParticipants!.find(
+        (entry) => entry.id === participantId,
+      )!.status = "removed";
+      log(
+        d,
+        "review.participant_removed",
+        "review",
+        review.id,
+        note,
+        review.organization_id,
+        { participant_id: participantId, party_role: participant.party_role },
+      );
+    });
+  };
+  const shareReview = async (reviewId: string, comment: string) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/share`, { comment });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    requireDemoOrganizationAdmin(review.organization_id);
+    const note = comment.trim();
+    if (note.length < 5 || note.length > 5000)
+      throw new Error("Nêu lý do chia sẻ từ 5 đến 5.000 ký tự.");
+    if (
+      !["AI_REVIEW_READY", "HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+        review.status,
+      )
+    )
+      throw new Error("Phân tích cần sẵn sàng trước khi chia sẻ review.");
+    if ((review.collaboration_status ?? "not_shared") !== "not_shared")
+      throw new Error(
+        "Review đã được chia sẻ; cần tạo chu kỳ review mới cho phiên bản nhãn khác.",
+      );
+    const commercial = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.party_role === "commercial_importer" &&
+        participant.status === "active",
+    );
+    if (!commercial)
+      throw new Error("Cần có một commercial importer đã chấp nhận lời mời.");
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const bundleHash = await localLabelBundleSha256(label, {
+      demoMockScannedFileIds: demoMockScannedFileIdsFor(
+        review,
+        label,
+        demoMockScansRef.current,
+      ),
+    });
+    const owner = (dataRef.current.reviewParticipants ?? []).find(
+      (participant) =>
+        participant.review_id === reviewId &&
+        participant.party_role === "label_owner" &&
+        participant.organization_id === review.organization_id &&
+        participant.status === "active",
+    );
+    if (
+      !owner ||
+      !(dataRef.current.partyDecisions ?? []).some(
+        (decision) =>
+          decision.review_id === reviewId &&
+          decision.label_version_id === review.label_version_id &&
+          decision.participant_id === owner.id &&
+          decision.decision === "accepted" &&
+          decision.label_bundle_sha256 === bundleHash,
+      )
+    )
+      throw new Error(
+        "Chủ nhãn phải xác nhận đúng phiên bản trước khi chia sẻ.",
+      );
+    commit((d) => {
+      d.reviews.find((entry) => entry.id === reviewId)!.collaboration_status =
+        "awaiting_importer";
+      d.reviews.find((entry) => entry.id === reviewId)!.updated_at = now();
+      log(
+        d,
+        "review.shared_with_importer",
+        "review",
+        reviewId,
+        note,
+        review.organization_id,
+        {
+          label_version_id: review.label_version_id,
+          label_bundle_sha256: bundleHash,
+        },
+      );
+    });
+  };
+  const recordPartyDecision = async (
+    reviewId: string,
+    partyRole: "label_owner" | "commercial_importer",
+    decisionType: ReviewPartyDecisionType,
+    comment: string,
+    proposedChanges: ReviewPartyDecisionEntry["proposed_changes"] = [],
+  ) => {
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/reviews/${reviewId}/party-decisions`, {
+        party_role: partyRole,
+        decision: decisionType,
+        comment,
+        proposed_changes: proposedChanges,
+      });
+      return;
+    }
+    const review = collaborationReviewFor(reviewId);
+    const note = comment.trim();
+    if (note.length < 5 || note.length > 10000)
+      throw new Error("Nhập lý do từ 5 đến 10.000 ký tự.");
+    if (proposedChanges.length > 50)
+      throw new Error("Tối đa 50 chỉnh sửa có chú thích trong một đề xuất.");
+    if (decisionType === "proposed_edit") {
+      if (
+        !proposedChanges.length ||
+        proposedChanges.some(
+          (change) =>
+            !change.field.trim() ||
+            change.field.trim().length > 200 ||
+            !change.proposed_value.trim() ||
+            change.proposed_value.trim().length > 5000 ||
+            change.reason.trim().length < 5 ||
+            change.reason.trim().length > 2000 ||
+            (change.current_value?.length ?? 0) > 5000,
+        )
+      )
+        throw new Error("Đề xuất cần chú thích hợp lệ cho từng trường.");
+    } else if (proposedChanges.length) {
+      throw new Error(
+        "Chỉ đề xuất chỉnh sửa mới chứa các thay đổi có chú thích.",
+      );
+    }
+    if (
+      !["AI_REVIEW_READY", "HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+        review.status,
+      )
+    )
+      throw new Error("Review chưa sẵn sàng ghi nhận quyết định của các bên.");
+    const actorOrganization = actorRef.current.organization_id;
+    if (!actorOrganization)
+      throw new Error("Cần tài khoản thành viên của tổ chức tham gia review.");
+    const participant = (dataRef.current.reviewParticipants ?? []).find(
+      (entry) =>
+        entry.review_id === reviewId &&
+        entry.party_role === partyRole &&
+        entry.organization_id === actorOrganization &&
+        entry.status === "active",
+    );
+    if (!participant)
+      throw new Error("Tài khoản này chưa tham gia review với vai trò đó.");
+    if (
+      partyRole === "label_owner" &&
+      (participant.organization_id !== review.organization_id ||
+        decisionType !== "accepted" ||
+        (review.collaboration_status ?? "not_shared") !== "not_shared")
+    )
+      throw new Error("Chỉ chủ nhãn có thể xác nhận trước khi chia sẻ review.");
+    if (partyRole === "commercial_importer") {
+      const collaborationStatus = review.collaboration_status ?? "not_shared";
+      if (
+        !["awaiting_importer", "changes_requested"].includes(
+          collaborationStatus,
+        )
+      )
+        throw new Error("Chủ nhãn chưa chia sẻ phiên bản này với importer.");
+      if (decisionType === "accepted") {
+        requireDemoOrganizationAdmin(participant.organization_id);
+        if (collaborationStatus !== "awaiting_importer")
+          throw new Error(
+            "Yêu cầu chỉnh sửa cần phiên bản nhãn mới trước khi xác nhận.",
+          );
+      }
+    }
+    if (partyRole === "label_owner" && decisionType !== "accepted")
+      throw new Error(
+        "Yêu cầu thay đổi hoặc đề xuất chỉ dành cho commercial importer.",
+      );
+    const label = dataRef.current.labelVersions.find(
+      (version) => version.id === review.label_version_id,
+    );
+    if (!label) throw new Error("Không tìm thấy phiên bản nhãn.");
+    const bundleHash = await localLabelBundleSha256(label, {
+      demoMockScannedFileIds: demoMockScannedFileIdsFor(
+        review,
+        label,
+        demoMockScansRef.current,
+      ),
+    });
+    if (partyRole === "commercial_importer" && decisionType === "accepted") {
+      const owner = (dataRef.current.reviewParticipants ?? []).find(
+        (entry) =>
+          entry.review_id === reviewId &&
+          entry.party_role === "label_owner" &&
+          entry.organization_id === review.organization_id &&
+          entry.status === "active",
+      );
+      if (
+        !owner ||
+        !(dataRef.current.partyDecisions ?? []).some(
+          (entry) =>
+            entry.review_id === reviewId &&
+            entry.label_version_id === review.label_version_id &&
+            entry.participant_id === owner.id &&
+            entry.decision === "accepted" &&
+            entry.label_bundle_sha256 === bundleHash,
+        )
+      )
+        throw new Error("Chủ nhãn chưa xác nhận đúng phiên bản này.");
+    }
+    const row: ReviewPartyDecisionEntry = {
+      id: uid(),
+      review_id: reviewId,
+      label_version_id: review.label_version_id,
+      participant_id: participant.id,
+      party_role: partyRole,
+      decision: decisionType,
+      comment: note,
+      proposed_changes: proposedChanges,
+      label_bundle_sha256: bundleHash,
+      actor_id: actorRef.current.id,
+      actor_name_snapshot: actorRef.current.name,
+      created_at: now(),
+    };
+    commit((d) => {
+      d.partyDecisions ??= [];
+      d.partyDecisions.push(row);
+      if (partyRole === "commercial_importer")
+        d.reviews.find((entry) => entry.id === reviewId)!.collaboration_status =
+          decisionType === "accepted"
+            ? "mutually_accepted"
+            : "changes_requested";
+      log(
+        d,
+        "review.party_decision_recorded",
+        "review",
+        reviewId,
+        "Đã ghi nhận quyết định của một bên cho phiên bản nhãn hiện tại.",
+        review.organization_id,
+        {
+          decision_id: row.id,
+          participant_id: participant.id,
+          party_role: partyRole,
+          decision: decisionType,
+          label_version_id: review.label_version_id,
+          label_bundle_sha256: bundleHash,
+        },
+      );
+    });
+  };
+  const approveReport = async (
+    reviewId: string,
+    requestId: string,
+    comment: string,
+  ) => {
     const review = reviewFor(reviewId);
+    if (isSyntheticDemoReview(review))
+      throw new Error(
+        "Hồ sơ demo này chỉ dành cho rà soát độc lập; không thể ký duyệt hoặc tạo báo cáo.",
+      );
     if (modeRef.current === "supabase")
       return remoteAction<Report>(`/reviews/${reviewId}/reports`, {
+        request_id: requestId,
         comment,
         disclaimer_confirmed: true,
       });
+
+    const request = dataRef.current.veximReviewRequests.find(
+      (candidate) =>
+        candidate.id === requestId &&
+        candidate.review_id === reviewId &&
+        candidate.status === "IN_PROGRESS" &&
+        candidate.label_version_id === review.label_version_id,
+    );
+    if (!request)
+      throw new Error(
+        "Chỉ có thể phát hành báo cáo khi có yêu cầu Vexim đang xử lý cho đúng phiên bản nhãn.",
+      );
+    const label = dataRef.current.labelVersions.find(
+      (candidate) => candidate.id === request.label_version_id,
+    );
+    if (!label)
+      throw new Error("Không tìm thấy phiên bản nhãn gắn với yêu cầu.");
+    const originals = label.original_files.filter(
+      (file) => file.kind === "original",
+    );
+    if (
+      !originals.length ||
+      originals.some(
+        (file) =>
+          file.scan_status !== "clean" || !/^[a-f0-9]{64}$/.test(file.sha256),
+      )
+    )
+      throw new Error(
+        "Mọi file artwork gốc phải qua malware scan thật trước khi phát hành báo cáo.",
+      );
+    const currentHash = await localLabelBundleSha256(label);
+    if (currentHash !== request.artwork_hash)
+      throw new Error(
+        "Mã SHA-256 của file nhãn không còn khớp với yêu cầu; không thể phát hành báo cáo cho phiên bản đã thay đổi.",
+      );
+
     const snapshot = buildReportSnapshot(
       dataRef.current,
       review,
       actorRef.current,
       comment,
       true,
+      requestId,
     );
     const year = new Date().getFullYear();
     const report: Report = {
@@ -1255,16 +2276,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       organization_id: review.organization_id,
       product_id: review.product_id,
       label_version_id: review.label_version_id,
+      vexim_review_request_id: request.id,
+      artwork_sha256: request.artwork_hash,
       report_number: `VLR-${year}-${String(dataRef.current.reports.length + 1).padStart(4, "0")}`,
       snapshot,
       created_at: now(),
       pdf_path: null,
       json_path: null,
     };
+    const completedAt = now();
     commit((d) => {
+      const storedRequest = d.veximReviewRequests.find(
+        (candidate) => candidate.id === requestId,
+      );
+      if (!storedRequest || storedRequest.status !== "IN_PROGRESS")
+        throw new Error("Yêu cầu Vexim Review đã đóng hoặc bị thay đổi.");
+      storedRequest.status = "COMPLETED";
+      storedRequest.completed_at = completedAt;
       d.reports.unshift(report);
-      const r = d.reviews.find((r) => r.id === reviewId)!;
+      const r = d.reviews.find((candidate) => candidate.id === reviewId)!;
       r.status = "COMPLETED";
+      r.report_status = "FINAL_REPORT_ISSUED";
       r.approved_by = actorRef.current.id;
       r.approved_at = snapshot.reviewer.approved_at;
       r.approval_comment = comment;
@@ -1275,9 +2307,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         "report.approved",
         "report",
         report.id,
-        `Phê duyệt nội dung báo cáo · ${snapshot.product.name}`,
+        `Ký duyệt nội bộ báo cáo Vexim · ${snapshot.product.name}`,
         review.organization_id,
-        { result: snapshot.result, snapshot_immutable: true },
+        {
+          result: snapshot.result,
+          snapshot_immutable: true,
+          vexim_review_request_id: request.id,
+          label_version_id: request.label_version_id,
+          artwork_hash: request.artwork_hash,
+        },
       );
     });
     return report;
@@ -1680,45 +2718,88 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
 
   const visible = actor.role.startsWith("customer")
-    ? {
-        ...rawData,
-        staff: [],
-        organizations: rawData.organizations.filter((o) =>
-          canAccessOrg(actor, o.id),
-        ),
-        members: rawData.members.filter((m) =>
-          canAccessOrg(actor, m.organization_id),
-        ),
-        products: rawData.products.filter((p) =>
-          canAccessOrg(actor, p.organization_id),
-        ),
-        labelVersions: rawData.labelVersions.filter((v) =>
-          canAccessOrg(actor, v.organization_id),
-        ),
-        reviews: rawData.reviews.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        findings: rawData.findings.filter((f) =>
-          canAccessOrg(actor, f.organization_id),
-        ),
-        requests: rawData.requests.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        reports: rawData.reports.filter((r) =>
-          canAccessOrg(actor, r.organization_id),
-        ),
-        audit: rawData.audit.filter(
-          (a) => a.organization_id && canAccessOrg(actor, a.organization_id),
-        ),
-        sources: rawData.sources.filter((s) =>
-          rawData.findings.some(
-            (f) =>
-              canAccessOrg(actor, f.organization_id) &&
-              f.citation_ids.includes(s.id),
+    ? (() => {
+        const sharedReviewIds = new Set(
+          (rawData.reviewParticipants ?? [])
+            .filter(
+              (participant) =>
+                participant.organization_id === actor.organization_id &&
+                participant.status === "active" &&
+                participant.party_role !== "label_owner",
+            )
+            .map((participant) => participant.review_id)
+            .filter((reviewId) => {
+              const review = rawData.reviews.find((r) => r.id === reviewId);
+              return (
+                !!review &&
+                (review.collaboration_status ?? "not_shared") !== "not_shared"
+              );
+            }),
+        );
+        const reviews = rawData.reviews.filter(
+          (r) =>
+            canAccessOrg(actor, r.organization_id) || sharedReviewIds.has(r.id),
+        );
+        const visibleReviewIds = new Set(reviews.map((r) => r.id));
+        const visibleProductIds = new Set(reviews.map((r) => r.product_id));
+        const visibleLabelVersionIds = new Set(
+          reviews.map((r) => r.label_version_id),
+        );
+        const findings = rawData.findings.filter((finding) =>
+          visibleReviewIds.has(finding.review_id),
+        );
+        return {
+          ...rawData,
+          staff: [],
+          organizations: rawData.organizations.filter((o) =>
+            canAccessOrg(actor, o.id),
           ),
-        ),
-        rules: [],
-      }
+          members: rawData.members.filter((m) =>
+            canAccessOrg(actor, m.organization_id),
+          ),
+          products: rawData.products.filter(
+            (p) =>
+              canAccessOrg(actor, p.organization_id) ||
+              visibleProductIds.has(p.id),
+          ),
+          labelVersions: rawData.labelVersions.filter(
+            (v) =>
+              canAccessOrg(actor, v.organization_id) ||
+              visibleLabelVersionIds.has(v.id),
+          ),
+          reviews,
+          findings,
+          requests: rawData.requests.filter((request) =>
+            visibleReviewIds.has(request.review_id),
+          ),
+          veximReviewRequests: rawData.veximReviewRequests.filter((request) =>
+            visibleReviewIds.has(request.review_id),
+          ),
+          reports: rawData.reports.filter((report) =>
+            visibleReviewIds.has(report.review_id),
+          ),
+          reviewParticipants: (rawData.reviewParticipants ?? []).filter(
+            (participant) =>
+              canAccessOrg(actor, participant.organization_id) ||
+              visibleReviewIds.has(participant.review_id),
+          ),
+          partyDecisions: (rawData.partyDecisions ?? []).filter((decision) =>
+            visibleReviewIds.has(decision.review_id),
+          ),
+          preScreeningReports: (rawData.preScreeningReports ?? []).filter(
+            (report) => visibleReviewIds.has(report.review_id),
+          ),
+          audit: rawData.audit.filter(
+            (a) => a.organization_id && canAccessOrg(actor, a.organization_id),
+          ),
+          sources: rawData.sources.filter((source) =>
+            findings.some((finding) =>
+              finding.citation_ids.includes(source.id),
+            ),
+          ),
+          rules: [],
+        };
+      })()
     : actor.role === "regulatory_admin"
       ? {
           ...rawData,
@@ -1729,6 +2810,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           reviews: [],
           findings: [],
           requests: [],
+          veximReviewRequests: [],
           reports: [],
           audit: rawData.audit.filter((a) => a.organization_id === null),
         }
@@ -1739,6 +2821,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         data: visible,
         actor,
         mode,
+        demoMockScans,
         loading,
         authenticated,
         error,
@@ -1750,6 +2833,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         signOut,
         setDemoRole,
         resetDemo,
+        runDemoMockScan,
         saveProduct,
         uploadVersion,
         submitReview,
@@ -1759,8 +2843,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         updateField,
         requestInformation,
         resolveRequest,
+        requestVeximReview,
+        startVeximReviewRequest,
         assignReview,
         transitionReview,
+        inviteReviewParticipant,
+        acceptReviewParticipant,
+        removeReviewParticipant,
+        shareReview,
+        recordPartyDecision,
         approveReport,
         downloadReport,
         getFileBlob,

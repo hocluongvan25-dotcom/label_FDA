@@ -24,6 +24,8 @@ const jobSchema = z
       "ecfr_section",
       "ecfr_discovery",
       "fr_monitor",
+      "fda_label_claims_html",
+      "fda_food_label_guide_pdf",
     ]),
     params: z
       .object({
@@ -180,7 +182,7 @@ export async function regulatoryKnowledgeApi(
       if (error) throw dbError(error);
       const sections = await ctx.db
         .from("regulatory_snapshot_sections")
-        .select("source_id")
+        .select("section,source_id")
         .eq("snapshot_id", id);
       if (sections.error) throw dbError(sections.error);
       const ids = sections.data.map((s) => s.source_id);
@@ -221,6 +223,10 @@ export async function regulatoryKnowledgeApi(
       return {
         snapshot,
         chunks: data,
+        source_links: sections.data.map((s) => ({
+          section: s.section,
+          source_id: s.source_id,
+        })),
         total_count: count ?? 0,
         offset,
         page_size: 50,

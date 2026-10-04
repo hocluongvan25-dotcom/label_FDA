@@ -14,11 +14,16 @@ import type {
   LabelVersion,
   Organization,
   Product,
+  PreScreeningReport,
   RegulatorySource,
   Report,
   Review,
+  ReviewParticipant,
+  ReviewPartyDecisionEntry,
+  VeximReviewRequest,
   AuditEntry,
 } from "@/lib/types";
+import { demoArtworkPreviewUrl } from "@/lib/demo-artwork";
 
 export class HttpError extends Error {
   constructor(
@@ -34,7 +39,8 @@ export interface ServerContext {
   actor: Actor;
 }
 export function serviceClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const url =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key)
     throw new HttpError(
@@ -47,7 +53,9 @@ export function serviceClient() {
 }
 export async function authenticate(request: Request): Promise<ServerContext> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key)
     throw new HttpError(
       503,
@@ -187,6 +195,37 @@ export async function readJson(
     throw new HttpError(400, "Payload cần là JSON object.");
   return result as Record<string, unknown>;
 }
+type ActiveVeximRequestBinding = Pick<
+  VeximReviewRequest,
+  "review_id" | "organization_id" | "label_version_id" | "artwork_hash" | "status"
+>;
+
+export function hasInProgressVeximRequest(
+  review: Pick<Review, "id" | "organization_id" | "label_version_id">,
+  requests: readonly ActiveVeximRequestBinding[],
+) {
+  return requests.some(
+    (request) =>
+      request.review_id === review.id &&
+      request.organization_id === review.organization_id &&
+      request.label_version_id === review.label_version_id &&
+      request.status === "IN_PROGRESS" &&
+      /^[a-f0-9]{64}$/.test(request.artwork_hash),
+  );
+}
+
+export function normalizeOrphanedHumanReview(
+  review: Review,
+  requests: readonly ActiveVeximRequestBinding[],
+): Review {
+  if (
+    review.status === "HUMAN_REVIEW" &&
+    !hasInProgressVeximRequest(review, requests)
+  )
+    return { ...review, status: "MANUAL_ESCALATION_REQUIRED" };
+  return review;
+}
+
 export async function workspace(
   ctx: ServerContext,
 ): Promise<{ data: AppData; actor: Actor }> {
@@ -200,9 +239,13 @@ export async function workspace(
     "label_files",
     "extracted_fields",
     "reviews",
+    "review_participants",
+    "review_party_decisions",
     "findings",
     "customer_requests",
+    "vexim_review_requests",
     "reports",
+    "pre_screening_reports",
     "audit_logs",
     "regulatory_sources",
     "compliance_rules",
@@ -231,6 +274,10 @@ export async function workspace(
   const values = Object.fromEntries(
     tables.map((t, i) => [t, results[i].data ?? []]),
   );
+  const veximReviewRequests = values.vexim_review_requests as VeximReviewRequest[];
+  const reviews = (values.reviews as Review[]).map((review) =>
+    normalizeOrphanedHumanReview(review, veximReviewRequests),
+  );
   const products = (values.products as Product[]).map((p) => ({
     ...p,
     assigned_to: p.assigned_to ?? "",
@@ -242,9 +289,14 @@ export async function workspace(
       .filter((i) => i.product_id === p.id)
       .sort((a, b) => a.order - b.order),
   }));
-  const files = values.label_files as (LabelFile & {
-    label_version_id: string;
-  })[];
+  const files = (
+    values.label_files as (LabelFile & {
+      label_version_id: string;
+    })[]
+  ).map((file) => {
+    const previewUrl = demoArtworkPreviewUrl(file);
+    return previewUrl ? { ...file, preview_url: previewUrl } : file;
+  });
   const fields = values.extracted_fields as (ExtractedField & {
     label_version_id: string;
   })[];
@@ -298,10 +350,14 @@ export async function workspace(
       members,
       products,
       labelVersions: labels,
-      reviews: values.reviews as Review[],
+      reviews,
       findings: values.findings as Finding[],
       requests: values.customer_requests as CustomerRequest[],
+      veximReviewRequests,
       reports: values.reports as Report[],
+      reviewParticipants: values.review_participants as ReviewParticipant[],
+      partyDecisions: values.review_party_decisions as ReviewPartyDecisionEntry[],
+      preScreeningReports: values.pre_screening_reports as PreScreeningReport[],
       audit: values.audit_logs as AuditEntry[],
       sources,
       rules: (values.compliance_rules as ComplianceRule[]).map((r) => ({

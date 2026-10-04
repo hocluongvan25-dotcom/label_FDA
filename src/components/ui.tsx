@@ -622,17 +622,17 @@ export function GuideModal({
           [
             "01",
             "Tạo hồ sơ sản phẩm",
-            "Nhập công thức, khối lượng, thị trường và claim. Tải PDF, PNG, JPEG hoặc TIFF; tối đa 50 MB/file, 20 file và 10 trang/PDF.",
+            "Nhập công thức, khối lượng, thị trường và các tuyên bố trên nhãn. Tải PDF, PNG, JPEG hoặc TIFF; tối đa 50 MB/tệp, 20 tệp và 10 trang/PDF.",
           ],
           [
             "02",
-            "Rà soát với evidence",
-            "OCR đọc nội dung, parser trích xuất cấu trúc và bộ rules kiểm tra. Dữ liệu thiếu không được suy đoán thành đạt; claim bệnh lý luôn cần chuyên gia.",
+            "Rà soát bằng chứng",
+            "Nhận dạng chữ (OCR) đọc nhãn, hệ thống trích xuất thông tin và bộ quy tắc đối chiếu. Dữ liệu thiếu không được suy đoán là đạt; tuyên bố liên quan bệnh lý luôn cần chuyên gia.",
           ],
           [
             "03",
             "Chuyên viên xác nhận",
-            "Đối chiếu nhãn, nguồn pháp lý và từng finding. Mọi chỉnh sửa / loại trừ cần lý do. Chỉ chuyên viên được phê duyệt nội dung báo cáo.",
+            "Đối chiếu nhãn, nguồn pháp lý và từng phát hiện. Mọi chỉnh sửa / loại trừ cần lý do. Chỉ chuyên viên Vexim được ký duyệt nội bộ nội dung báo cáo; đây không phải phê duyệt của FDA.",
           ],
         ].map(([n, title, text]) => (
           <div key={n}>

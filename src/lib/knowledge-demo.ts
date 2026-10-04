@@ -20,6 +20,12 @@ export interface KnowledgeChunkView {
   chunk_content_hash: string;
   citation_precision: string;
   source_anchor: string;
+  chunk_key?: string;
+  paragraph_path?: string[];
+  topics?: string[];
+  hierarchy?: { type: string; identifier: string; heading: string }[];
+  sequence?: number;
+  xml_tag?: string | null;
 }
 export interface KnowledgeDetail {
   snapshot: KnowledgeSnapshot;
@@ -41,6 +47,7 @@ export interface KnowledgeDetail {
     status: string;
     test_status: string;
   }[];
+  source_links: { section: string; source_id: string }[];
 }
 interface DemoKnowledge extends KnowledgeDashboard {
   chunks: KnowledgeChunkView[];
@@ -110,6 +117,7 @@ export function detailKnowledgeDemo(
     offset,
     page_size: 50,
     affected_rules: [],
+    source_links: [],
     regression: {
       passed: true,
       rule_refs: [],
@@ -195,8 +203,10 @@ export async function mutateKnowledgeDemo(
       effective_to: null,
       effective_date_unknown: true,
       raw_response_id: id(),
+      document_revision_date: null,
+      document_revision_label: null,
       content_hash: hash,
-      parser_version: fr ? "vexim-fr-metadata/1.0.0" : "vexim-ecfr-xml/1.1.0",
+      parser_version: fr ? "vexim-fr-metadata/1.0.0" : "vexim-ecfr-xml/1.2.0",
       status: "DRAFT",
       retrieved_at: stamp(),
       created_at: stamp(),
@@ -212,6 +222,8 @@ export async function mutateKnowledgeDemo(
         : {
             coverage_complete: true,
             citations_valid: true,
+            unresolved_citation_count: 0,
+            citation_paths_resolved: true,
             regression_passed: true,
             section_count: kind === "ecfr_section" ? 1 : 3,
             chunk_count: kind === "ecfr_section" ? 1 : 3,
@@ -260,6 +272,10 @@ export async function mutateKnowledgeDemo(
           chunk_content_hash: hash,
           citation_precision: "section",
           source_anchor: `https://www.ecfr.gov/on/${issue}/title-21/section-${sec}`,
+          chunk_key: `${sid}:${sec}`,
+          paragraph_path: [],
+          topics: [topic],
+          hierarchy: [],
         });
     }
     if (fr)

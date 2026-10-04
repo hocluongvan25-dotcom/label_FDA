@@ -1,9 +1,17 @@
-import type { ReviewStatus, Role, Severity } from "./types";
+import type {
+  ExpertReviewStatus,
+  ReviewStatus,
+  Role,
+  Severity,
+  TriageOverallResult,
+  TriageReportStatus,
+  TriageRoute,
+} from "./types";
 
 export const DISCLAIMER =
-  "Đây là đánh giá sơ bộ trong phạm vi nhãn thực phẩm liên bang Hoa Kỳ, dựa trên dữ liệu được cung cấp, phiên bản nguồn và quy tắc tại thời điểm rà soát. Báo cáo không phải phê duyệt hoặc chứng nhận của FDA, không bảo đảm thông quan và không thay thế tư vấn pháp lý. Kết luận phải được chuyên viên Vexim xác nhận.";
+  "Đây là đánh giá sơ bộ trong phạm vi nhãn thực phẩm liên bang Hoa Kỳ, dựa trên dữ liệu được cung cấp, phiên bản nguồn và quy tắc tại thời điểm rà soát. Báo cáo không phải phê duyệt hoặc chứng nhận của FDA, không bảo đảm thông quan và không thay thế tư vấn pháp lý. Nếu các bên chọn phát hành báo cáo chuyên môn của Vexim, chuyên viên Vexim sẽ xác nhận nội dung báo cáo riêng biệt với quyết định thương mại giữa các bên.";
 export const DISCLAIMER_EN =
-  "This is a preliminary review within the stated US federal food-labeling scope, based on supplied information and the recorded source/rule versions. It is not FDA approval or certification, does not guarantee customs clearance, and is not a substitute for legal advice. A Vexim reviewer must confirm the report.";
+  "This is a preliminary review within the stated US federal food-labeling scope, based on supplied information and the recorded source/rule versions. It is not FDA approval or certification, does not guarantee customs clearance, and is not a substitute for legal advice. If the parties request a Vexim expert report, a Vexim reviewer will confirm that report separately from the parties' commercial decisions.";
 export const DEMO_ACTOR = {
   id: "demo-reviewer",
   name: "Linh Nguyễn",
@@ -70,10 +78,46 @@ export const STATUS_META: Record<
   },
   MODEL_FAILED: { label: "Lỗi mô hình", short: "Lỗi mô hình", tone: "red" },
   MANUAL_ESCALATION_REQUIRED: {
-    label: "Cần chuyên gia xử lý",
-    short: "Cần chuyên gia",
+    label: "Khuyến nghị rà soát thủ công",
+    short: "Cần rà soát",
     tone: "red",
   },
+};
+export const TRIAGE_ROUTE_META: Record<
+  TriageRoute,
+  { label: string; tone: string }
+> = {
+  OUT_OF_SCOPE: { label: "Ngoài phạm vi", tone: "neutral" },
+  BLOCKED_REGULATORY_SOURCE: { label: "Chặn do nguồn/quy tắc", tone: "red" },
+  EXPERT_REVIEW_REQUIRED: {
+    label: "Khuyến nghị rà soát thủ công",
+    tone: "purple",
+  },
+  NEEDS_CUSTOMER_INFORMATION: { label: "Cần khách bổ sung", tone: "amber" },
+  AUTO_SCREENED: { label: "Sàng lọc tự động · quy trình", tone: "blue" },
+};
+export const TRIAGE_RESULT_LABELS: Record<TriageOverallResult, string> = {
+  NOT_ASSESSED: "Chưa có kết quả cuối",
+  NO_AUTOMATED_ISSUE_DETECTED: "Chưa phát hiện tự động trong phạm vi",
+  POTENTIAL_ISSUES_FOUND: "Có điểm cần xem xét",
+  NO_ISSUE_DETECTED_IN_SCOPE: "Không ghi nhận vấn đề trong phạm vi rà soát",
+  NEEDS_CORRECTION: "Cần chỉnh sửa theo kết luận chuyên viên",
+  INSUFFICIENT_INFORMATION: "Chưa đủ thông tin",
+  BLOCKED: "Bị chặn bởi nguồn/quy tắc",
+  OUT_OF_SCOPE: "Ngoài phạm vi hỗ trợ",
+};
+export const TRIAGE_REPORT_STATUS_LABELS: Record<TriageReportStatus, string> = {
+  NOT_ISSUED: "Chưa tạo báo cáo",
+  BLOCKED: "Đang chặn phát hành",
+  DISABLED: "Tính năng sàng lọc đang tắt",
+  PRE_SCREENING_ISSUED: "Đã tạo bản ghi sàng lọc sơ bộ",
+  FINAL_REPORT_ISSUED: "Đã phát hành báo cáo cuối",
+};
+export const EXPERT_REVIEW_STATUS_LABELS: Record<ExpertReviewStatus, string> = {
+  NOT_REQUIRED: "Chưa yêu cầu chuyên gia",
+  PENDING: "Chờ chuyên gia",
+  IN_PROGRESS: "Đang rà soát chuyên môn",
+  EXPERT_REVIEWED: "Đã được chuyên gia rà soát",
 };
 export const SEVERITY_META: Record<
   Severity,
@@ -135,6 +179,6 @@ export const FINDING_STATUS_LABELS = {
 };
 export const RESULT_LABELS = {
   NEEDS_CORRECTION: "Cần chỉnh sửa",
-  NO_ISSUE_DETECTED_IN_SCOPE: "Chưa phát hiện vấn đề trong phạm vi rà soát",
+  NO_ISSUE_DETECTED_IN_SCOPE: "Không ghi nhận vấn đề trong phạm vi rà soát",
   INSUFFICIENT_INFORMATION: "Chưa đủ thông tin để kết luận",
 };

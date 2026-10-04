@@ -48,12 +48,19 @@ import {
   Textarea,
 } from "./ui";
 import { LabelViewer } from "./label-viewer";
+import { ReviewCollaborationPanel } from "./review-collaboration";
+import { VeximReviewRequestPanel } from "./vexim-review-request-panel";
 import type {
+  Actor,
+  ComplianceRule,
   Evidence,
   ExtractedField,
   Finding,
+  LabelFile,
   LabelVersion,
   PipelineStep,
+  RegulatorySource,
+  Report,
   Review,
   Severity,
 } from "@/lib/types";
@@ -61,11 +68,17 @@ import {
   DISCLAIMER,
   FINDING_STATUS_LABELS,
   PIPELINE_LABELS,
+  RESULT_LABELS,
   SEVERITY_META,
+  TRIAGE_REPORT_STATUS_LABELS,
+  TRIAGE_RESULT_LABELS,
+  TRIAGE_ROUTE_META,
 } from "@/lib/constants";
 import { can } from "@/lib/permissions";
+import { isSyntheticDemoReview } from "@/lib/demo-review";
 import {
   assigneeName,
+  downloadJson,
   errorMessage,
   findingCounts,
   formatDate,
@@ -73,7 +86,10 @@ import {
   sourceIsCurrent,
   uid,
 } from "@/lib/utils";
-import { approvalIssues } from "@/lib/reports";
+import { approvalIssues, reportDisposition } from "@/lib/reports";
+import { PRE_SCREENING_DISCLAIMER } from "@/lib/triage";
+import { normalizePages } from "@/lib/files";
+import { isBundledDemoArtwork } from "@/lib/demo-artwork";
 
 const fieldLabels: Record<string, string> = {
   statement_of_identity: "Tên gọi thực phẩm",
@@ -89,6 +105,22 @@ const fieldLabels: Record<string, string> = {
   use_instruction: "Hướng dẫn sử dụng",
   english_required_information: "Thông tin bằng tiếng Anh",
 };
+function lowConfidenceOcrFields(fields: ExtractedField[]) {
+  return fields.filter(
+    (field) =>
+      !!field.value?.trim() &&
+      !field.manually_verified &&
+      field.confidence < 0.7,
+  );
+}
+function hasUnresolvedParagraphPaths(review: Review) {
+  return (review.triage_reasons ?? []).some(
+    (reason) =>
+      reason.code === "UNRESOLVED_REGULATORY_CITATION" &&
+      /paragraph paths?/i.test(reason.message) &&
+      /unresolved/i.test(reason.message),
+  );
+}
 export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
   const app = useApp();
   const review = app.data.reviews.find((r) => r.id === reviewId);
@@ -121,8 +153,8 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
     return (
       <Card>
         <EmptyState
-          title="Không tìm thấy review"
-          description="Review không tồn tại hoặc bạn không có quyền truy cập tổ chức này."
+          title="Không tìm thấy lượt rà soát"
+          description="Lượt rà soát không tồn tại hoặc bạn không có quyền truy cập tổ chức này."
           action={
             <Link className="btn btn-secondary" href="/reviews">
               Về danh sách
@@ -131,6 +163,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
         />
       </Card>
     );
+  const demoFixture = isSyntheticDemoReview(review);
   const product =
     review.dossier_snapshot ??
     app.data.products.find((p) => p.id === review.product_id)!;
@@ -142,10 +175,38 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
       <Card>
         <EmptyState
           title="Dữ liệu hồ sơ chưa đầy đủ"
-          description="Vui lòng tải lại workspace hoặc liên hệ quản trị hệ thống."
+          description="Vui lòng tải lại màn hình hoặc liên hệ quản trị hệ thống."
         />
       </Card>
     );
+  const preScreeningReport = app.data.preScreeningReports
+    ?.filter((report) => report.review_id === review.id)
+    .sort((a, b) => b.version - a.version)[0];
+  const lowOcrFields = lowConfidenceOcrFields(label.extracted_fields);
+  const unresolvedParagraphPaths = hasUnresolvedParagraphPaths(review);
+  const reviewRules = app.data.rules
+    .filter((rule) => rule.scope.includes(product.category))
+    .sort((a, b) => a.rule_key.localeCompare(b.rule_key));
+  const matchingVeximRequests = (app.data.veximReviewRequests ?? []).filter(
+    (request) =>
+      request.review_id === review.id &&
+      request.label_version_id === review.label_version_id,
+  );
+  const finalReport = app.data.reports.find(
+    (report) =>
+      report.review_id === review.id &&
+      report.label_version_id === review.label_version_id,
+  );
+  const activeVeximRequest = matchingVeximRequests.find(
+    (request) => request.status === "IN_PROGRESS",
+  );
+  const reportRequest = finalReport
+    ? matchingVeximRequests.find(
+        (request) =>
+          request.id === finalReport.vexim_review_request_id &&
+          request.artwork_hash === finalReport.artwork_sha256,
+      )
+    : undefined;
   const counts = findingCounts(findings);
   const selected = findings.find((f) => f.id === selectedId);
   const filtered = findings.filter(
@@ -156,6 +217,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
   const evidence = selected?.evidence[evidenceIndex] ?? selected?.evidence[0];
   const editable =
     can(app.actor, "review") &&
+    !!activeVeximRequest &&
     !["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED", "PROCESSING"].includes(
       review.status,
     );
@@ -195,16 +257,26 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           <h1>{product.name}</h1>
           <div className="review-subtitle">
             <span>
-              {
-                app.data.organizations.find(
-                  (o) => o.id === product.organization_id,
-                )?.name
-              }
+              {app.data.organizations.find(
+                (o) => o.id === product.organization_id,
+              )?.name ??
+                app.data.reviewParticipants?.find(
+                  (participant) =>
+                    participant.review_id === review.id &&
+                    participant.party_role === "label_owner",
+                )?.organization_name_snapshot ??
+                "Doanh nghiệp sở hữu nhãn"}
             </span>
             <span>·</span>
             <span>Nhãn v{label.version}</span>
             <span>·</span>
-            <span>US federal food labeling</span>
+            <span>Ghi nhãn thực phẩm tại Hoa Kỳ</span>
+            {demoFixture && (
+              <>
+                <span>·</span>
+                <span title="Mã hồ sơ demo">{review.idempotency_key}</span>
+              </>
+            )}
             <span>·</span>
             <span title="Người phụ trách">
               {assigneeName(app.data, review.assigned_to, app.actor)}
@@ -213,23 +285,6 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           </div>
         </div>
         <div className="review-header-actions">
-          {can(app.actor, "review") &&
-            !review.assigned_to &&
-            !["COMPLETED", "APPROVED_WITH_NOTES", "ARCHIVED"].includes(
-              review.status,
-            ) && (
-              <Button
-                variant="secondary"
-                onClick={() =>
-                  void app
-                    .assignReview(review.id)
-                    .then(() => app.notify("Đã nhận phụ trách hồ sơ."))
-                    .catch((e) => app.notify(errorMessage(e), "error"))
-                }
-              >
-                <Check size={14} /> Nhận phụ trách
-              </Button>
-            )}
           <Button
             variant="secondary"
             onClick={() => setCompareOpen(true)}
@@ -242,17 +297,20 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               <MessageSquarePlus size={14} /> Yêu cầu bổ sung
             </Button>
           )}
-          {can(app.actor, "review") && (
+          {can(app.actor, "review") && activeVeximRequest && !demoFixture && (
             <Button
               onClick={approve}
               disabled={
                 processing ||
+                !["HUMAN_REVIEW", "REVISION_REQUIRED"].includes(
+                  review.status,
+                ) ||
                 ["COMPLETED", "ARCHIVED", "APPROVED_WITH_NOTES"].includes(
                   review.status,
                 )
               }
             >
-              <FileCheck2 size={15} /> Phê duyệt báo cáo
+              <FileCheck2 size={15} /> Ký duyệt báo cáo Vexim
             </Button>
           )}
           {review.status === "COMPLETED" && (
@@ -265,22 +323,156 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           )}
         </div>
       </div>
+      {demoFixture && (
+        <div style={{ marginBottom: 16 }}>
+          <InlineNotice icon={<Info size={15} />}>
+            Hồ sơ mẫu tổng hợp, chỉ để chuyên gia rà soát độc lập. Hình nhãn SVG
+            tĩnh chưa được quét; không chạy OCR hoặc bộ quy tắc trên dữ liệu
+            mẫu.
+            {review.triage_evaluated_at
+              ? " Dữ liệu phân luồng đang hiển thị chỉ là mẫu kiểm thử giao diện, không phải kết quả đã chạy."
+              : " Không có dữ liệu phân luồng hoặc quyết định tuân thủ."}{" "}
+            Cả 15 phát hiện vẫn đang mở; bộ quy tắc và nguồn vẫn ở trạng thái
+            DRAFT.
+          </InlineNotice>
+        </div>
+      )}
+      {!demoFixture && <ReviewCollaborationPanel review={review} />}
+      <VeximReviewRequestPanel review={review} />
       {review.status === "SOURCE_UNAVAILABLE" && (
         <div style={{ marginBottom: 16 }}>
           <InlineNotice tone="warning">
             {review.error_message ??
-              "Nguồn hoặc bộ rules chưa đủ để xác định kết quả."}{" "}
+              "Nguồn hoặc bộ quy tắc chưa đủ để xác định kết quả."}{" "}
             <Link href="/sources" className="text-button">
-              Xem source registry
+              Xem danh mục nguồn
             </Link>
           </InlineNotice>
         </div>
       )}
+      {review.triage_route && review.triage_evaluated_at && (
+        <Card style={{ marginBottom: 16, padding: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              flexWrap: "wrap",
+            }}
+          >
+            <div>
+              <div className="tiny muted">
+                PHÂN LUỒNG · {review.triage_policy_version}
+              </div>
+              <h3 style={{ margin: "5px 0 8px" }}>Phân luồng hồ sơ</h3>
+              <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+                <Badge tone={TRIAGE_ROUTE_META[review.triage_route].tone}>
+                  {TRIAGE_ROUTE_META[review.triage_route].label}
+                </Badge>
+                {review.overall_result && (
+                  <Badge tone="neutral">
+                    {TRIAGE_RESULT_LABELS[review.overall_result]}
+                  </Badge>
+                )}
+                {unresolvedParagraphPaths && (
+                  <Badge tone="red">
+                    Đường dẫn điều khoản · cần xác minh thủ công
+                  </Badge>
+                )}
+              </div>
+            </div>
+            <div className="tiny muted" style={{ textAlign: "right" }}>
+              Rủi ro {review.triage_risk_score ?? 0}/100
+              <br />
+              Báo cáo sàng lọc:{" "}
+              {review.report_status
+                ? TRIAGE_REPORT_STATUS_LABELS[review.report_status]
+                : "Chưa ghi nhận"}
+            </div>
+          </div>
+          {unresolvedParagraphPaths && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone="warning" icon={<CircleAlert size={15} />}>
+                Một hoặc nhiều đường dẫn đến điều khoản chưa được xác minh. Cần
+                đối chiếu thủ công trích dẫn; trạng thái này không có nghĩa
+                Vexim đã nhận yêu cầu rà soát và không được dùng để tự động phát
+                hành.
+              </InlineNotice>
+            </div>
+          )}
+          {review.triage_route === "AUTO_SCREENED" && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone={preScreeningReport ? "info" : "warning"}>
+                Kết quả sàng lọc tự động chỉ dùng để phân luồng, không phải kết
+                luận tuân thủ.
+                {preScreeningReport
+                  ? " Đã tạo bản ghi sàng lọc sơ bộ riêng, kèm tuyên bố giới hạn phạm vi."
+                  : " Chưa tạo bản ghi sàng lọc sơ bộ vì tính năng này đang tắt hoặc tổ chức chưa thuộc danh sách được phép."}
+              </InlineNotice>
+            </div>
+          )}
+          {!!review.triage_reasons?.length && (
+            <ul className="validation-list" style={{ marginTop: 12 }}>
+              {review.triage_reasons.map((reason, index) => (
+                <li
+                  key={`${reason.code}-${reason.source_id ?? ""}-${reason.rule_key ?? index}`}
+                >
+                  {reason.message}
+                  {reason.rule_key ? ` · ${reason.rule_key}` : ""}
+                </li>
+              ))}
+            </ul>
+          )}
+          {preScreeningReport && (
+            <div style={{ marginTop: 12 }}>
+              <InlineNotice tone="info">
+                <strong>
+                  Bản ghi sàng lọc sơ bộ · v{preScreeningReport.version}
+                </strong>
+                <div style={{ marginTop: 5 }}>
+                  {PRE_SCREENING_DISCLAIMER.vi}
+                </div>
+              </InlineNotice>
+              <Button
+                variant="secondary"
+                style={{ marginTop: 10 }}
+                onClick={() =>
+                  downloadJson(
+                    preScreeningReport.snapshot,
+                    `pre-screening-${review.id}-v${preScreeningReport.version}.json`,
+                  )
+                }
+              >
+                <FileText size={14} /> Tải bản ghi JSON
+              </Button>
+            </div>
+          )}
+        </Card>
+      )}
+      {!processing && (activeVeximRequest || reportRequest) && (
+        <ReviewSignoffSummary
+          review={review}
+          report={finalReport}
+          actor={app.actor}
+          staff={app.data.staff ?? []}
+          demo={app.mode === "demo"}
+          requestInProgress={!!activeVeximRequest}
+        />
+      )}
+      <ReviewComparisonBoard
+        review={review}
+        label={label}
+        rules={reviewRules}
+        findings={findings}
+        lowOcrFields={lowOcrFields}
+        demo={app.mode === "demo"}
+      />
       {!processing && (
         <div className="review-summary-strip">
           <div>
             <span className="tiny muted" style={{ marginRight: 3 }}>
-              {findings.length} finding
+              {findings.length} phát hiện
             </span>
             {Object.entries(counts)
               .filter(([, n]) => n > 0)
@@ -289,12 +481,12 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               ))}
             {!findings.length && (
               <Badge tone="green">
-                Chưa ghi nhận finding · cần chuyên viên xác nhận
+                Chưa ghi nhận phát hiện · cần chuyên viên xác nhận
               </Badge>
             )}
           </div>
           <span>
-            <ShieldCheck size={13} /> Evidence → Rule → Citation → Chuyên viên
+            <ShieldCheck size={13} /> Bằng chứng → Quy tắc → Nguồn → Chuyên viên
           </span>
         </div>
       )}
@@ -313,7 +505,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                 style={{ fontSize: 11 }}
                 onClick={() => setFieldsOpen(true)}
               >
-                <ScanLine size={13} /> Extraction
+                <ScanLine size={13} /> Nội dung OCR
               </button>
               {editable && (
                 <button
@@ -321,7 +513,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                   onClick={() => setSelectionEnabled((v) => !v)}
                 >
                   <ScanLine size={13} />
-                  {selectionEnabled ? "Hủy chọn vùng" : "Chọn vùng evidence"}
+                  {selectionEnabled ? "Hủy chọn vùng" : "Chọn vùng bằng chứng"}
                 </button>
               )}
             </div>
@@ -367,7 +559,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
               ))}
               <div style={{ width: "100%", marginTop: 4 }}>
                 <Select
-                  aria-label="Lọc trạng thái finding"
+                  aria-label="Lọc trạng thái phát hiện"
                   value={status}
                   onChange={(e) => setStatus(e.target.value)}
                   style={{ fontSize: 11, padding: "7px 10px", minHeight: 30 }}
@@ -423,8 +615,8 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                 <EmptyState
                   title={
                     findings.length
-                      ? "Không có finding phù hợp"
-                      : "Chưa ghi nhận finding"
+                      ? "Không có phát hiện phù hợp"
+                      : "Chưa ghi nhận phát hiện"
                   }
                   description={
                     findings.length
@@ -444,13 +636,13 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                     setManualOpen(true);
                   }}
                 >
-                  <Plus size={14} /> Thêm finding thủ công
+                  <Plus size={14} /> Thêm phát hiện thủ công
                 </Button>
               ) : (
                 <span className="tiny muted">
                   {can(app.actor, "review")
-                    ? "Review đã đóng · dữ liệu chỉ đọc"
-                    : "Chỉ chuyên viên Vexim được xác nhận finding"}
+                    ? "Lượt rà soát đã đóng · chỉ được xem dữ liệu"
+                    : "Chỉ chuyên viên Vexim được xác nhận phát hiện"}
                 </span>
               )}
             </div>
@@ -462,7 +654,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
                 <Badge>
                   {selected.reasoning_category === "manual"
                     ? "Thủ công"
-                    : "AI / Rules"}
+                    : "AI / bộ quy tắc"}
                 </Badge>
               )}
             </div>
@@ -478,7 +670,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             ) : (
               <EmptyState
                 title="Mỗi quyết định cần một căn cứ"
-                description="Chọn finding để xem evidence, rule và citation; hoặc thêm phát hiện thủ công sau khi đối chiếu nhãn."
+                description="Chọn một phát hiện để xem bằng chứng, quy tắc và trích dẫn nguồn; hoặc thêm phát hiện thủ công sau khi đối chiếu nhãn."
                 icon={<BookOpen size={28} />}
               />
             )}
@@ -503,7 +695,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
             <Info size={12} /> Rà soát sơ bộ. Không phải phê duyệt của FDA.
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
-            {editable && (
+            {editable && !demoFixture && (
               <button
                 className="text-button"
                 style={{ fontSize: 11 }}
@@ -601,6 +793,523 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
     </div>
   );
 }
+function ReviewSignoffSummary({
+  review,
+  report,
+  actor,
+  staff,
+  demo,
+  requestInProgress,
+}: {
+  review: Review;
+  report?: Report;
+  actor: Actor;
+  staff: { id: string; name: string }[];
+  demo: boolean;
+  requestInProgress: boolean;
+}) {
+  const snapshot = report?.snapshot;
+  const approvedBy = review.approved_by ?? snapshot?.approved_by ?? null;
+  const reviewerName =
+    snapshot?.reviewer.name ??
+    staff.find((person) => person.id === approvedBy)?.name ??
+    (approvedBy === actor.id ? actor.name : approvedBy);
+  const disposition = snapshot?.disposition ?? snapshot?.result ?? null;
+  const rationale =
+    snapshot?.rationale ??
+    review.approval_comment ??
+    snapshot?.reviewer.comment ??
+    null;
+  const approvedAt =
+    review.approved_at ?? snapshot?.reviewer.approved_at ?? null;
+
+  return (
+    <section
+      className="card review-signoff-card"
+      data-testid="review-signoff-summary"
+      aria-label="Tóm tắt ký duyệt nội bộ"
+    >
+      <div className="review-signoff-header">
+        <div>
+          <div className="tiny muted">LỊCH SỬ KÝ DUYỆT NỘI BỘ VEXIM</div>
+          <h2>Kết quả, người duyệt và lý do</h2>
+        </div>
+        <Badge tone={demo ? "amber" : approvedBy ? "green" : "amber"}>
+          {demo
+            ? approvedBy
+              ? "DEMO · mẫu ký duyệt"
+              : "DEMO · mẫu chưa ký"
+            : approvedBy
+              ? "Đã ký duyệt nội bộ"
+              : "Chưa ký duyệt"}
+        </Badge>
+      </div>
+      <dl className="review-signoff-grid">
+        <dt>Chuyên viên</dt>
+        <dd>{reviewerName ?? "Chưa ghi nhận"}</dd>
+        <dt>Mã người duyệt nội bộ</dt>
+        <dd>{approvedBy ?? "Chưa ghi nhận"}</dd>
+        <dt>Kết quả trong phạm vi</dt>
+        <dd>
+          {disposition ? (
+            <Badge
+              tone={disposition === "NEEDS_CORRECTION" ? "orange" : "neutral"}
+            >
+              {RESULT_LABELS[disposition]}
+            </Badge>
+          ) : requestInProgress ? (
+            "Chưa ký duyệt · Vexim Review đang được xử lý"
+          ) : (
+            "Chưa ghi nhận kết quả ký duyệt trong báo cáo."
+          )}
+        </dd>
+        <dt>Lý do</dt>
+        <dd>
+          {rationale ??
+            (requestInProgress
+              ? "Chuyên viên sẽ ghi lý do khi ký duyệt báo cáo."
+              : "Báo cáo không ghi nhận lý do ký duyệt.")}
+        </dd>
+        <dt>Thời điểm</dt>
+        <dd>{approvedAt ? formatDate(approvedAt, true) : "Chưa ký duyệt"}</dd>
+      </dl>
+      {demo && (
+        <p className="review-signoff-demo-note">
+          Dữ liệu trên là mẫu tổng hợp trong Demo; không phải phê duyệt sản
+          phẩm, kết luận pháp lý hoặc quyết định của FDA.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function ReviewArtworkPreview({
+  file,
+  label,
+}: {
+  file: LabelFile;
+  label: LabelVersion;
+}) {
+  const app = useApp();
+  const appRef = useRef(app);
+  appRef.current = app;
+  const snapshotRef = useRef({ file, label });
+  snapshotRef.current = { file, label };
+  const [src, setSrc] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = "";
+    setSrc("");
+    setError("");
+    setLoading(true);
+    const load = async () => {
+      const { file: currentFile, label: currentLabel } = snapshotRef.current;
+      if (
+        appRef.current.mode === "supabase" &&
+        currentFile.scan_status !== "clean" &&
+        !isBundledDemoArtwork(currentFile)
+      )
+        throw new Error(
+          "Chờ hoàn tất quét phần mềm độc hại thật trước khi mở nhãn gốc.",
+        );
+
+      if (currentFile.preview_url) {
+        if (active) {
+          setSrc(currentFile.preview_url);
+          setLoading(false);
+        }
+        return;
+      }
+
+      let blob = await appRef.current.getFileBlob(currentFile);
+      if (
+        currentFile.mime_type === "application/pdf" ||
+        currentFile.mime_type === "image/tiff"
+      ) {
+        const pages = await normalizePages(blob, currentFile);
+        if (!pages[0])
+          throw new Error("Không tạo được bản xem trước trang đầu của nhãn.");
+        blob = pages[0].image;
+      } else if (
+        currentFile.mime_type !== "image/png" &&
+        currentFile.mime_type !== "image/jpeg"
+      ) {
+        throw new Error(
+          "Định dạng này chưa hỗ trợ xem trước trên màn hình rà soát.",
+        );
+      }
+
+      objectUrl = URL.createObjectURL(blob);
+      if (active) {
+        setSrc(objectUrl);
+        setLoading(false);
+        await appRef.current.logFileAccess(currentLabel, currentFile);
+      }
+    };
+    load().catch((cause) => {
+      if (!active) return;
+      setError(errorMessage(cause));
+      setLoading(false);
+    });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [file.id, file.mime_type, file.preview_url, file.scan_status, label.id]);
+
+  return (
+    <div
+      className="review-artwork-preview"
+      data-testid={`review-artwork-preview-${file.id}`}
+    >
+      {loading ? (
+        <div className="review-artwork-unavailable" role="status">
+          <Loader2 size={20} className="spin" />
+          <span>Đang tạo bản xem trước…</span>
+        </div>
+      ) : error ? (
+        <div className="review-artwork-unavailable" role="status">
+          <FileText size={24} />
+          <span>Không thể xem trước nhãn gốc</span>
+          <small>{error}</small>
+        </div>
+      ) : (
+        <img
+          data-testid="review-artwork-preview-image"
+          src={src}
+          alt={`Nhãn ${file.name}, phiên bản ${label.version}`}
+          onError={() => {
+            setSrc("");
+            setError("Bản xem trước không tải được; file gốc vẫn được giữ.");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+function ReviewComparisonBoard({
+  review,
+  label,
+  rules,
+  findings,
+  lowOcrFields,
+  demo,
+}: {
+  review: Review;
+  label: LabelVersion;
+  rules: ComplianceRule[];
+  findings: Finding[];
+  lowOcrFields: ExtractedField[];
+  demo: boolean;
+}) {
+  const app = useApp();
+  const draftOnlyDemo = isSyntheticDemoReview(review);
+  const demoFixture =
+    demo ||
+    label.original_files.some(
+      (file) =>
+        file.sha256 === "DEMO_FIXTURE" || file.scan_status === "dev_unscanned",
+    ) ||
+    label.extracted_fields.some((field) =>
+      field.extraction_model.startsWith("demo-fixture"),
+    );
+  const executedRules = new Map(
+    (review.rule_snapshot ?? []).map((snapshot) => [
+      snapshot.rule_key,
+      snapshot,
+    ]),
+  );
+  const activeRuleCount = rules.filter(
+    (rule) => rule.status === "ACTIVE",
+  ).length;
+
+  return (
+    <section
+      className="card review-comparison-card"
+      data-testid="review-comparison-board"
+      aria-label="Đối chiếu nhãn gốc, nội dung OCR và quy tắc"
+    >
+      <div className="review-comparison-header">
+        <div>
+          <div className="tiny muted">
+            ĐỐI CHIẾU NHÃN, NỘI DUNG TRÍCH XUẤT VÀ CĂN CỨ
+          </div>
+          <h2>
+            {draftOnlyDemo
+              ? "Nhãn gốc ↔ OCR chưa chạy ↔ 15 quy tắc DRAFT"
+              : "Nhãn gốc ↔ kết quả OCR ↔ quy tắc áp dụng"}
+          </h2>
+          <p>
+            Đối chiếu cùng một phiên bản nhãn trước mọi quyết định của chuyên
+            viên.
+          </p>
+        </div>
+        <Badge tone={demoFixture ? "amber" : "blue"}>
+          {demoFixture ? "DỮ LIỆU DEMO MÔ PHỎNG" : "BẰNG CHỨNG RÀ SOÁT"}
+        </Badge>
+      </div>
+      {demoFixture && (
+        <div className="review-comparison-demo-notice">
+          <InlineNotice tone="warning" icon={<Info size={15} />}>
+            {draftOnlyDemo
+              ? review.triage_evaluated_at
+                ? "Ảnh nhãn SVG tĩnh; không có OCR hoặc quy tắc được chạy. Dữ liệu phân luồng chỉ là mẫu kiểm thử giao diện. Cả 15 phát hiện là gợi ý rà soát tổng hợp, không phải kết luận pháp lý; bộ quy tắc và nguồn vẫn ở trạng thái DRAFT."
+                : "Ảnh nhãn SVG tĩnh; không có OCR hoặc phân luồng. Cả 15 phát hiện là gợi ý rà soát tổng hợp, không phải kết luận pháp lý. Bộ quy tắc và nguồn vẫn ở trạng thái DRAFT; chưa có ký duyệt hoặc báo cáo."
+              : "Nhãn, nội dung OCR, nguồn và trạng thái quy tắc trong bản Demo là dữ liệu mô phỏng. Chúng không xác minh sản phẩm hoặc nguồn pháp lý và không hàm ý Vexim hay FDA đã phê duyệt."}
+          </InlineNotice>
+        </div>
+      )}
+      {lowOcrFields.length > 0 && (
+        <div className="review-ocr-warning" role="alert">
+          <CircleAlert size={18} />
+          <div>
+            <strong>
+              {lowOcrFields.length} trường OCR có độ tin cậy dưới 70% — cần đối
+              chiếu nhãn gốc.
+            </strong>
+            <div className="review-ocr-warning-fields">
+              {lowOcrFields.map((field) => (
+                <Badge key={field.id} tone="red">
+                  {fieldLabels[field.field] ?? field.field} ·{" "}
+                  {Math.round(field.confidence * 100)}%
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="review-comparison-grid">
+        <section className="review-comparison-panel" aria-label="Ảnh nhãn gốc">
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>01 · NHÃN GỐC</span>
+              <h3>Nhãn gốc</h3>
+            </div>
+            <Badge>{label.original_files.length} file</Badge>
+          </div>
+          <div className="review-comparison-panel-body review-artwork-grid">
+            {label.original_files.map((file) => (
+              <article className="review-artwork-item" key={file.id}>
+                <ReviewArtworkPreview file={file} label={label} />
+                <strong>{file.name}</strong>
+                <small>
+                  {file.page_count} trang · {file.scan_status}
+                  {demoFixture ? " · DEMO FIXTURE" : ""}
+                </small>
+              </article>
+            ))}
+            {!label.original_files.length && (
+              <EmptyState
+                title="Chưa có nhãn gốc"
+                description="Chưa có file gốc để đối chiếu."
+                icon={<FileText size={24} />}
+              />
+            )}
+          </div>
+        </section>
+
+        <section
+          className="review-comparison-panel"
+          aria-label="Nội dung trích xuất bằng nhận dạng ký tự quang học (OCR)"
+        >
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>02 · NỘI DUNG ĐƯỢC TRÍCH XUẤT</span>
+              <h3>{draftOnlyDemo ? "OCR chưa chạy" : "Kết quả OCR"}</h3>
+            </div>
+            <Badge>{label.extracted_fields.length} trường</Badge>
+          </div>
+          <div className="review-comparison-panel-body review-ocr-list">
+            {label.extracted_fields.map((field) => {
+              const isLowConfidence = lowOcrFields.some(
+                (low) => low.id === field.id,
+              );
+              return (
+                <article
+                  key={field.id}
+                  className={clsx(
+                    "review-ocr-field",
+                    isLowConfidence && "review-ocr-field-low",
+                  )}
+                  data-testid={
+                    isLowConfidence ? "ocr-low-confidence-field" : undefined
+                  }
+                >
+                  <div className="review-ocr-field-heading">
+                    <div>
+                      <strong>{fieldLabels[field.field] ?? field.field}</strong>
+                      <small>{field.field}</small>
+                    </div>
+                    <Badge
+                      tone={
+                        isLowConfidence
+                          ? "red"
+                          : field.manually_verified
+                            ? "green"
+                            : "neutral"
+                      }
+                    >
+                      {field.manually_verified
+                        ? "Đã xác minh thủ công"
+                        : `Độ tin cậy ${Math.round(field.confidence * 100)}%`}
+                    </Badge>
+                  </div>
+                  <p className="review-ocr-field-value">
+                    {field.value ??
+                      "Không phát hiện · cần xác minh, không phải kết luận vắng mặt"}
+                  </p>
+                  <blockquote>{field.evidence.text}</blockquote>
+                  <small className="review-ocr-field-meta">
+                    Trang {field.evidence.page} · {field.extraction_model}
+                  </small>
+                  {isLowConfidence && (
+                    <p className="review-ocr-field-alert">
+                      Độ tin cậy OCR dưới 70% · cần đọc lại trực tiếp trên nhãn
+                      gốc.
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+            {!label.extracted_fields.length && (
+              <EmptyState
+                title={
+                  draftOnlyDemo
+                    ? "Chưa có dữ liệu OCR"
+                    : "Chưa có nội dung được trích xuất"
+                }
+                description={
+                  draftOnlyDemo
+                    ? "Hồ sơ mẫu chỉ chứa hình nhãn tĩnh. Không chạy OCR và không suy đoán nội dung vắng mặt."
+                    : "Chạy nhận dạng chữ (OCR) và trích xuất nội dung trước khi đối chiếu."
+                }
+                icon={<ScanLine size={24} />}
+              />
+            )}
+          </div>
+        </section>
+
+        <section
+          className="review-comparison-panel"
+          aria-label="Bộ quy tắc áp dụng cho sản phẩm"
+        >
+          <div className="review-comparison-panel-header">
+            <div>
+              <span>03 · QUY TẮC ÁP DỤNG & KẾT QUẢ THEO PHIÊN BẢN</span>
+              <h3>Quy tắc đang hoạt động · {activeRuleCount}/15</h3>
+            </div>
+            <Badge tone={activeRuleCount === 15 ? "neutral" : "amber"}>
+              {activeRuleCount} / 15 đang hoạt động
+            </Badge>
+          </div>
+          <div className="review-comparison-panel-body review-rule-list">
+            {activeRuleCount !== 15 && (
+              <InlineNotice tone="warning" icon={<CircleAlert size={14} />}>
+                Bộ quy tắc tham chiếu dự kiến có 15 quy tắc đang hoạt động
+                (ACTIVE). Hiện có {activeRuleCount}; các quy tắc bản nháp
+                (DRAFT) hoặc đã bị thay thế (SUPERSEDED) không được tính. Chỉ số
+                này phản ánh mức sẵn sàng của bộ quy tắc, không phải số vấn đề
+                trên nhãn hay kết luận tuân thủ.
+              </InlineNotice>
+            )}
+            {rules.map((rule) => {
+              const execution = executedRules.get(rule.rule_key);
+              const relatedFindings = findings.filter(
+                (finding) => finding.rule_key === rule.rule_key,
+              );
+              const sources = rule.source_citations
+                .map((id) =>
+                  app.data.sources.find((source) => source.id === id),
+                )
+                .filter((source): source is RegulatorySource => !!source);
+              return (
+                <article
+                  className="review-rule-row"
+                  key={rule.id}
+                  data-testid="review-rule-row"
+                >
+                  <div className="review-rule-row-title">
+                    <div>
+                      <strong>{rule.rule_key}</strong>
+                      <span>{rule.name}</span>
+                    </div>
+                    <Badge
+                      tone={
+                        demoFixture
+                          ? "amber"
+                          : rule.status === "ACTIVE"
+                            ? "green"
+                            : rule.status === "DRAFT"
+                              ? "neutral"
+                              : "red"
+                      }
+                    >
+                      {demoFixture ? `DEMO · ${rule.status}` : rule.status}
+                    </Badge>
+                  </div>
+                  <div className="review-rule-row-meta">
+                    <span>
+                      Bản ghi quy tắc ở lượt rà soát:{" "}
+                      {execution ? `v${execution.version}` : "chưa có"}
+                    </span>
+                    <span>
+                      Kiểm thử hồi quy:{" "}
+                      {rule.test_status === "passed"
+                        ? "Đạt"
+                        : rule.test_status === "failed"
+                          ? "Không đạt"
+                          : "Chưa chạy"}
+                    </span>
+                    <span>
+                      Phát hiện:{" "}
+                      {relatedFindings.length
+                        ? relatedFindings
+                            .map(
+                              (finding) =>
+                                FINDING_STATUS_LABELS[finding.status],
+                            )
+                            .join(", ")
+                        : "Chưa ghi nhận"}
+                    </span>
+                  </div>
+                  <div className="review-rule-sources">
+                    <span>Nguồn căn cứ</span>
+                    {sources.length ? (
+                      sources.map((source) => (
+                        <span className="review-rule-source" key={source.id}>
+                          {source.citation} ·{" "}
+                          {demoFixture
+                            ? `DEMO · ${source.status}`
+                            : source.status}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="review-rule-source-missing">
+                        Chưa có trích dẫn từ danh mục nguồn
+                      </span>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
+            {activeRuleCount === 0 && (
+              <EmptyState
+                title="Chưa có quy tắc ACTIVE phù hợp"
+                description="0/15 là số quy tắc đang hoạt động, không phải số lỗi trên nhãn. Điều này không chứng minh nhãn không có vấn đề hoặc đã tuân thủ. Hãy liên hệ người phụ trách để xác minh quy tắc áp dụng cho sản phẩm."
+                icon={<ShieldCheck size={24} />}
+              />
+            )}
+          </div>
+        </section>
+      </div>
+    </section>
+  );
+}
+
 function FindingDetail({
   finding: f,
   review,
@@ -621,6 +1330,10 @@ function FindingDetail({
   const [citationOpen, setCitationOpen] = useState(false);
   const [citations, setCitations] = useState(f.citation_ids);
   const [citationReason, setCitationReason] = useState("");
+  const recordedReviewerName = f.reviewed_by
+    ? (app.data.staff?.find((person) => person.id === f.reviewed_by)?.name ??
+      (f.reviewed_by === app.actor.id ? app.actor.name : f.reviewed_by))
+    : null;
   const decide = async (status: Finding["status"]) => {
     setBusy(true);
     try {
@@ -631,8 +1344,8 @@ function FindingDetail({
       });
       app.notify(
         status === "dismissed"
-          ? "Đã loại trừ finding, lý do được ghi vào audit log."
-          : "Đã xác nhận finding.",
+          ? "Đã loại trừ phát hiện; lý do được ghi vào nhật ký kiểm toán."
+          : "Đã xác nhận phát hiện.",
       );
     } catch (e) {
       app.notify(errorMessage(e), "error");
@@ -650,7 +1363,7 @@ function FindingDetail({
         citation_ids: citations,
       });
       setCitationOpen(false);
-      app.notify("Đã gắn citation từ registry.");
+      app.notify("Đã gắn trích dẫn từ danh mục nguồn.");
     } catch (e) {
       app.notify(errorMessage(e), "error");
     } finally {
@@ -679,7 +1392,7 @@ function FindingDetail({
           <p className="finding-detail-text">{f.description}</p>
         </div>
         <div className="finding-detail-section">
-          <h4>EVIDENCE TRÊN NHÃN / HỒ SƠ</h4>
+          <h4>BẰNG CHỨNG TRÊN NHÃN / HỒ SƠ</h4>
           {f.evidence.map((e, i) => (
             <div key={i} style={{ marginTop: i ? 10 : 0 }}>
               <blockquote className="evidence-quote">“{e.text}”</blockquote>
@@ -688,8 +1401,8 @@ function FindingDetail({
                   {e.kind === "dossier"
                     ? "Thông tin khách hàng khai báo"
                     : e.kind === "absence"
-                      ? "Không phát hiện trong panel đã đọc"
-                      : `Trang ${e.page} · bbox có tọa độ`}
+                      ? "Không phát hiện trong phần nhãn đã đọc"
+                      : `Trang ${e.page} · tọa độ vùng trên nhãn`}
                 </span>
                 {e.bbox && (
                   <button className="text-button" onClick={() => onEvidence(i)}>
@@ -741,8 +1454,8 @@ function FindingDetail({
             if (!s)
               return (
                 <div className="citation-card" key={id}>
-                  <div>Citation từ registry · {id.slice(-6)}</div>
-                  <p>Liên hệ chuyên viên để xem nguồn snapshot.</p>
+                  <div>Nguồn trích dẫn trong danh mục · {id.slice(-6)}</div>
+                  <p>Liên hệ chuyên viên để xem bản lưu của nguồn.</p>
                 </div>
               );
             const original = review.rule_snapshot
@@ -776,8 +1489,8 @@ function FindingDetail({
           })}
           {f.citation_pending && (
             <InlineNotice tone="warning" icon={<Clock3 size={14} />}>
-              Citation pending human review. Finding quan trọng chưa đủ điều
-              kiện để duyệt báo cáo.
+              Trích dẫn đang chờ chuyên viên xác minh. Phát hiện quan trọng chưa
+              đủ điều kiện để ký duyệt báo cáo.
             </InlineNotice>
           )}
         </div>
@@ -789,27 +1502,53 @@ function FindingDetail({
           <Sparkles size={12} />
           {f.ai_confidence !== null ? (
             <>
-              Độ tin cậy đọc / rules{" "}
+              Độ tin cậy của kết quả nhận dạng chữ / quy tắc{" "}
               <ProgressBar value={f.ai_confidence * 100} />{" "}
               <strong>{Math.round(f.ai_confidence * 100)}%</strong>
             </>
+          ) : isSyntheticDemoReview(review) ? (
+            "Gợi ý DRAFT · chưa có kết quả AI hoặc OCR"
           ) : (
-            "Finding do chuyên viên tạo"
+            "Phát hiện do chuyên viên tạo"
           )}
-          <span title="Confidence không phải xác suất tuân thủ pháp luật.">
+          <span title="Độ tin cậy không phải xác suất tuân thủ pháp luật.">
             <Info size={11} />
           </span>
         </div>
-        {f.reviewer_comment && (
-          <div className="finding-detail-section">
-            <h4>QUYẾT ĐỊNH ĐÃ LƯU</h4>
-            <p className="finding-detail-text">{f.reviewer_comment}</p>
-            <div className="tiny muted" style={{ marginTop: 7, fontSize: 7 }}>
-              {FINDING_STATUS_LABELS[f.status]} ·{" "}
-              {f.reviewed_at ? formatDate(f.reviewed_at, true) : ""}
-            </div>
-          </div>
-        )}
+        <div
+          className="finding-detail-section finding-disposition-card"
+          data-testid="finding-disposition"
+        >
+          <h4>KẾT QUẢ XỬ LÝ PHÁT HIỆN · NHẬT KÝ KIỂM TOÁN</h4>
+          <dl>
+            <dt>Kết quả xử lý</dt>
+            <dd>
+              <Badge
+                tone={
+                  f.status === "accepted"
+                    ? "green"
+                    : f.status === "dismissed"
+                      ? "neutral"
+                      : "amber"
+                }
+              >
+                {FINDING_STATUS_LABELS[f.status]}
+              </Badge>
+            </dd>
+            <dt>Chuyên viên</dt>
+            <dd>{recordedReviewerName ?? "Chưa ghi nhận"}</dd>
+            <dt>Lý do</dt>
+            <dd>
+              {f.reviewer_comment ?? "Bắt buộc trước khi chốt disposition."}
+            </dd>
+            <dt>Thời điểm ghi nhận</dt>
+            <dd>
+              {f.reviewed_at
+                ? formatDate(f.reviewed_at, true)
+                : "Chưa ghi nhận"}
+            </dd>
+          </dl>
+        </div>
       </div>
       {editable && (
         <div className="finding-actions">
@@ -818,7 +1557,7 @@ function FindingDetail({
             style={{ marginTop: 0, marginBottom: 11 }}
           >
             <Select
-              aria-label="Mức độ finding"
+              aria-label="Mức độ nghiêm trọng của phát hiện"
               value={severity}
               onChange={(e) => setSeverity(e.target.value as Severity)}
             >
@@ -869,8 +1608,8 @@ function FindingDetail({
       <Modal
         open={citationOpen}
         onClose={() => setCitationOpen(false)}
-        title="Gắn citation từ source registry"
-        description="Không thể nhập citation tự do. Nguồn chưa hiện hành sẽ giữ trạng thái pending human review."
+        title="Gắn trích dẫn từ danh mục nguồn"
+        description="Không thể nhập trích dẫn tự do. Nguồn chưa hiện hành sẽ tiếp tục chờ chuyên viên xác minh."
         footer={
           <>
             <Button variant="secondary" onClick={() => setCitationOpen(false)}>
@@ -906,7 +1645,7 @@ function FindingDetail({
         </div>
         <div style={{ marginTop: 22 }}>
           <Textarea
-            label="Lý do gắn / thay citation"
+            label="Lý do gắn / thay trích dẫn nguồn"
             value={citationReason}
             onChange={(e) => setCitationReason(e.target.value)}
           />
@@ -923,6 +1662,7 @@ function PipelinePanel({
   onRerun: () => void;
 }) {
   const { actor, mode } = useApp();
+  const demoFixture = isSyntheticDemoReview(review);
   return (
     <Card className="pipeline-panel">
       <div
@@ -939,15 +1679,25 @@ function PipelinePanel({
         <div>
           <h2>Phân tích nhãn theo từng bước</h2>
           <p className="tiny muted" style={{ marginTop: 4 }}>
-            Giữ evidence và kết quả trung gian · bắt buộc chuyên viên xác nhận.
+            Giữ bằng chứng và kết quả trung gian · bắt buộc chuyên viên xác
+            nhận.
           </p>
         </div>
       </div>
+      {demoFixture && (
+        <div style={{ marginTop: 20 }}>
+          <InlineNotice icon={<Info size={16} />}>
+            Quy trình bị khóa cho hồ sơ mẫu này: hình nhãn tĩnh chưa được quét,
+            không có OCR hoặc dữ liệu phân luồng; bộ quy tắc vẫn ở trạng thái
+            DRAFT.
+          </InlineNotice>
+        </div>
+      )}
       {review.idempotency_key.startsWith("seed-") && (
         <div style={{ marginTop: 20 }}>
           <InlineNotice icon={<Info size={16} />}>
-            Đây là trạng thái pipeline minh họa, không có job nền đang chạy.
-            Chọn “Chạy lại kiểm tra” để chạy bộ rules trên fixture mẫu.
+            Đây là trạng thái quy trình minh họa, không có tác vụ nền đang chạy.
+            Chọn “Chạy lại kiểm tra” để chạy bộ quy tắc trên dữ liệu mẫu.
           </InlineNotice>
         </div>
       )}
@@ -1001,10 +1751,11 @@ function PipelinePanel({
       <div className="pipeline-actions">
         <span className="tiny muted">
           {mode === "demo"
-            ? "OCR xử lý cục bộ · chưa có virus scan"
-            : "Job queue · tối đa 3 lần thử · dead-letter khi hết retry"}
+            ? "Nhận dạng chữ (OCR) xử lý cục bộ · chưa quét mã độc"
+            : "Hàng đợi tác vụ · thử lại tối đa 3 lần · sau đó chuyển sang danh sách lỗi"}
         </span>
         {can(actor, "review") &&
+          !demoFixture &&
           (review.status !== "PROCESSING" ||
             review.idempotency_key.startsWith("seed-")) && (
             <Button variant="secondary" onClick={onRerun}>
@@ -1122,14 +1873,30 @@ function ApprovalModal({
   const [comment, setComment] = useState("");
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
-  const issues = approvalIssues(app.data, review, app.mode === "supabase");
+  const request = app.data.veximReviewRequests?.find(
+    (candidate) =>
+      candidate.review_id === review.id &&
+      candidate.label_version_id === review.label_version_id &&
+      candidate.status === "IN_PROGRESS",
+  );
+  const issues = approvalIssues(
+    app.data,
+    review,
+    app.mode === "supabase",
+    request?.id,
+  );
   const findings = app.data.findings.filter((f) => f.review_id === review.id);
   const openFindings = findings.filter((f) => f.status === "open").length;
+  const disposition = openFindings ? null : reportDisposition(app.data, review);
   const submit = async () => {
     setBusy(true);
     try {
-      const report = await app.approveReport(review.id, comment);
-      app.notify("Đã phê duyệt nội dung báo cáo. Có thể tải PDF hoặc JSON.");
+      if (!request)
+        throw new Error(
+          "Chưa có VeximReviewRequest đang xử lý cho phiên bản này.",
+        );
+      const report = await app.approveReport(review.id, request.id, comment);
+      app.notify("Đã ký duyệt nội bộ báo cáo Vexim. Có thể tải PDF hoặc JSON.");
       onClose();
       router.push(`/reports?report=${report.id}`);
     } catch (e) {
@@ -1142,8 +1909,8 @@ function ApprovalModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Phê duyệt nội dung báo cáo"
-      description="Chỉ xác nhận báo cáo Vexim — không phải phê duyệt nhãn hoặc sản phẩm bởi FDA."
+      title="Ký duyệt nội bộ báo cáo Vexim"
+      description="Chỉ ký duyệt báo cáo Vexim cho phiên bản này — không phải phê duyệt/chứng nhận của FDA hoặc kết luận tuân thủ toàn diện."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -1156,7 +1923,7 @@ function ApprovalModal({
             loading={busy}
             onClick={() => void submit()}
           >
-            <FileCheck2 size={15} /> Duyệt & tạo báo cáo
+            <FileCheck2 size={15} /> Ký duyệt & phát hành báo cáo Vexim
           </Button>
         </>
       }
@@ -1164,12 +1931,12 @@ function ApprovalModal({
       <div className="approval-checklist">
         <div>
           {openFindings ? <CircleAlert size={15} /> : <CheckCheck size={15} />}{" "}
-          {findings.length - openFindings}/{findings.length} finding đã có quyết
-          định
+          {findings.length - openFindings}/{findings.length} phát hiện đã có
+          quyết định
         </div>
         <div>
-          <Avatar name={app.actor.name} size="sm" /> Người duyệt:{" "}
-          {app.actor.name}
+          <Avatar name={app.actor.name} size="sm" /> Người ký duyệt nội bộ:{" "}
+          <strong>{app.actor.name}</strong>
         </div>
         <div>
           <FileText size={15} /> Nhãn v
@@ -1177,9 +1944,18 @@ function ApprovalModal({
             app.data.labelVersions.find((v) => v.id === review.label_version_id)
               ?.version
           }{" "}
-          · US federal food labeling MVP
+          · Phạm vi hỗ trợ hiện tại: ghi nhãn thực phẩm theo quy định liên bang
+          Hoa Kỳ
         </div>
       </div>
+      {app.mode === "demo" && (
+        <div style={{ marginBottom: 14 }}>
+          <InlineNotice tone="warning">
+            Demo: dữ liệu ký duyệt là dữ liệu mẫu tổng hợp; không phải phê duyệt
+            sản phẩm, kết luận pháp lý hoặc quyết định của FDA.
+          </InlineNotice>
+        </div>
+      )}
       {issues.length > 0 ? (
         <InlineNotice tone="warning">
           <strong>Chưa đủ điều kiện phát hành</strong>
@@ -1191,20 +1967,42 @@ function ApprovalModal({
         </InlineNotice>
       ) : (
         <InlineNotice tone="success">
-          Evidence, citation, snapshot nguồn và quyết định chuyên viên đã đủ
-          điều kiện để tạo báo cáo. Kết quả báo cáo vẫn có thể là “Cần chỉnh
+          Bằng chứng, trích dẫn nguồn, bản ghi nguồn và quyết định của chuyên
+          viên đã đủ điều kiện để tạo báo cáo. Kết quả vẫn có thể là “Cần chỉnh
           sửa” hoặc “Chưa đủ thông tin”.
         </InlineNotice>
       )}
       <div style={{ marginTop: 22 }}>
         <Textarea
-          label="Ghi chú phê duyệt"
+          label="Lý do/ghi chú ký duyệt nội bộ"
           required
           value={comment}
           onChange={(e) => setComment(e.target.value)}
           placeholder="Ghi rõ phạm vi, căn cứ quyết định và những giới hạn còn lại…"
-          hint="Tối thiểu 10 ký tự. Ghi chú được lưu trong snapshot báo cáo bất biến."
+          hint="Tối thiểu 10 ký tự. Lý do được lưu cùng lượt rà soát và bản ghi báo cáo bất biến."
         />
+      </div>
+      <div
+        className="approval-signoff-preview"
+        data-testid="approval-signoff-preview"
+      >
+        <div>
+          <span>Mã người duyệt nội bộ</span>
+          <strong>{app.actor.id}</strong>
+          <small>{app.actor.name}</small>
+        </div>
+        <div>
+          <span>Kết quả dự kiến</span>
+          <strong>
+            {disposition
+              ? RESULT_LABELS[disposition]
+              : `Chờ quyết định · ${openFindings} phát hiện chưa xử lý`}
+          </strong>
+        </div>
+        <div>
+          <span>Lý do ký duyệt</span>
+          <p>{comment.trim() || "Nhập lý do ký duyệt báo cáo nội bộ Vexim."}</p>
+        </div>
       </div>
       <div style={{ marginTop: 20 }}>
         <Checkbox checked={confirmed} onChange={setConfirmed}>
@@ -1294,7 +2092,7 @@ function ManualFindingModal({
         created_at: now(),
       };
       await app.addFinding(f);
-      app.notify("Đã thêm finding thủ công.");
+      app.notify("Đã thêm phát hiện thủ công.");
       onClose();
       setTitle("");
       setDescription("");
@@ -1310,8 +2108,8 @@ function ManualFindingModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Thêm finding thủ công"
-      description="Gắn evidence thật và nguồn trong registry. Thiếu nguồn sẽ ở trạng thái citation pending human review."
+      title="Thêm phát hiện thủ công"
+      description="Gắn bằng chứng thực tế và nguồn từ danh mục. Trích dẫn chưa xác minh sẽ tiếp tục chờ chuyên viên."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -1327,13 +2125,13 @@ function ManualFindingModal({
             }
             onClick={() => void submit()}
           >
-            <Plus size={15} /> Thêm finding
+            <Plus size={15} /> Thêm phát hiện
           </Button>
         </>
       }
     >
       <Input
-        label="Tiêu đề finding"
+        label="Tiêu đề phát hiện"
         required
         value={title}
         onChange={(e) => setTitle(e.target.value)}
@@ -1356,14 +2154,14 @@ function ManualFindingModal({
         onChange={(e) => setDescription(e.target.value)}
       />
       <Textarea
-        label="Evidence — nguyên văn trên nhãn"
+        label="Bằng chứng — nguyên văn trên nhãn"
         required
         value={text}
         onChange={(e) => setText(e.target.value)}
         hint={
           evidence?.bbox
-            ? "Gắn vào vùng nhãn đang được chọn ở workspace."
-            : "Không có bbox được chọn. Chuyên viên phải đối chiếu file / trang trong hồ sơ."
+            ? "Gắn vào vùng nhãn đang được chọn trên màn hình rà soát."
+            : "Chưa chọn vùng trên nhãn. Chuyên viên cần đối chiếu tệp / trang trong hồ sơ."
         }
       />
       <Select
@@ -1371,7 +2169,7 @@ function ManualFindingModal({
         value={citation}
         onChange={(e) => setCitation(e.target.value)}
       >
-        <option value="">Citation pending human review</option>
+        <option value="">Trích dẫn chờ chuyên viên xác minh</option>
         {app.data.sources.map((s) => (
           <option key={s.id} value={s.id}>
             {s.citation} · {s.status}
@@ -1479,8 +2277,8 @@ function CompareModal({
         </div>
       ) : (
         <p className="tiny muted" style={{ marginTop: 17 }}>
-          Chưa có extraction của phiên bản trước; chỉ so sánh ảnh gốc, không suy
-          đoán khác biệt.
+          Chưa có dữ liệu trích xuất của phiên bản trước; chỉ so sánh ảnh gốc,
+          không suy đoán khác biệt.
         </p>
       )}
     </Modal>
@@ -1500,17 +2298,19 @@ function ExtractionModal({
   onClose: () => void;
 }) {
   const app = useApp();
+  const draftOnlyDemo = isSyntheticDemoReview(review);
   const [editing, setEditing] = useState<ExtractedField | null>(null);
   const [value, setValue] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const lowFields = lowConfidenceOcrFields(label.extracted_fields);
   const save = async () => {
     if (!editing) return;
     setBusy(true);
     try {
       await app.updateField(label.id, editing.id, value, reason);
       app.notify(
-        "Đã lưu giá trị có xác nhận; file gốc không thay đổi. Hãy chạy lại rules.",
+        "Đã lưu nội dung đã xác minh; file gốc không thay đổi. Hãy chạy lại bộ quy tắc.",
       );
       setEditing(null);
     } catch (e) {
@@ -1525,14 +2325,14 @@ function ExtractionModal({
         open={open && !editing}
         onClose={onClose}
         title="Dữ liệu trích xuất từ nhãn"
-        description="Giữ nguyên wording và tọa độ evidence. Khi chỉnh extracted value, cần lý do và chạy lại rules."
+        description="Giữ nguyên câu chữ và tọa độ bằng chứng. Khi chỉnh nội dung đã trích xuất, cần nêu lý do và chạy lại bộ quy tắc."
         wide
         footer={
           <>
             <Button variant="secondary" onClick={onClose}>
               Đóng
             </Button>
-            {editable && (
+            {editable && !isSyntheticDemoReview(review) && (
               <Button
                 onClick={() =>
                   void app
@@ -1540,51 +2340,84 @@ function ExtractionModal({
                     .then(() => {
                       onClose();
                       app.notify(
-                        "Đang chạy lại rules trên extracted fields đã lưu.",
+                        "Đang chạy lại bộ quy tắc trên nội dung đã trích xuất.",
                         "info",
                       );
                     })
                     .catch((e) => app.notify(errorMessage(e), "error"))
                 }
               >
-                <RefreshCw size={14} /> Chạy lại rules
+                <RefreshCw size={14} /> Chạy lại bộ quy tắc
               </Button>
             )}
           </>
         }
       >
+        {lowFields.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <InlineNotice tone="warning" icon={<CircleAlert size={15} />}>
+              {lowFields.length} trường OCR (nhận dạng chữ) dưới 70% độ tin cậy.
+              Hãy đối chiếu từng trường với nhãn gốc; độ tin cậy thấp không phải
+              kết luận về tuân thủ.
+            </InlineNotice>
+          </div>
+        )}
         <div className="field-list">
-          {label.extracted_fields.map((f) => (
-            <div key={f.id} className="field-list-item">
-              <div>
-                <strong>{fieldLabels[f.field] ?? f.field}</strong>
-                <p>{f.value ?? "Chưa phát hiện · không tự điền dữ liệu"}</p>
-                <small>
-                  {f.extraction_model} ·{" "}
-                  {f.manually_verified
-                    ? "Đã xác minh thủ công"
-                    : `${Math.round(f.confidence * 100)}% confidence`}{" "}
-                  · Trang {f.evidence.page}
-                </small>
+          {label.extracted_fields.map((f) => {
+            const isLowConfidence = lowFields.some(
+              (field) => field.id === f.id,
+            );
+            return (
+              <div
+                key={f.id}
+                className={clsx(
+                  "field-list-item",
+                  isLowConfidence && "field-list-item-low",
+                )}
+              >
+                <div>
+                  <strong>{fieldLabels[f.field] ?? f.field}</strong>
+                  {isLowConfidence && (
+                    <Badge tone="red">
+                      OCR &lt;70% · {Math.round(f.confidence * 100)}%
+                    </Badge>
+                  )}
+                  <p>{f.value ?? "Chưa phát hiện · không tự điền dữ liệu"}</p>
+                  <small>
+                    {f.extraction_model} ·{" "}
+                    {f.manually_verified
+                      ? "Đã xác minh thủ công"
+                      : `${Math.round(f.confidence * 100)}% độ tin cậy`}{" "}
+                    · Trang {f.evidence.page}
+                  </small>
+                </div>
+                {editable && (
+                  <IconButton
+                    label={`Sửa ${fieldLabels[f.field] ?? f.field}`}
+                    onClick={() => {
+                      setEditing(f);
+                      setValue(f.value ?? "");
+                      setReason("");
+                    }}
+                  >
+                    <Pencil size={15} />
+                  </IconButton>
+                )}
               </div>
-              {editable && (
-                <IconButton
-                  label={`Sửa ${fieldLabels[f.field] ?? f.field}`}
-                  onClick={() => {
-                    setEditing(f);
-                    setValue(f.value ?? "");
-                    setReason("");
-                  }}
-                >
-                  <Pencil size={15} />
-                </IconButton>
-              )}
-            </div>
-          ))}
+            );
+          })}
           {!label.extracted_fields.length && (
             <EmptyState
-              title="Chưa có extraction"
-              description="Chờ pipeline hoàn thành hoặc chạy lại từ OCR."
+              title={
+                draftOnlyDemo
+                  ? "Chưa có dữ liệu OCR"
+                  : "Chưa có dữ liệu trích xuất"
+              }
+              description={
+                draftOnlyDemo
+                  ? "Hồ sơ mẫu chỉ chứa hình nhãn tĩnh. Không có tác vụ OCR hoặc kết quả cần xác minh."
+                  : "Chờ quy trình hoàn tất hoặc chạy lại từ bước nhận dạng chữ (OCR)."
+              }
             />
           )}
         </div>
@@ -1593,7 +2426,7 @@ function ExtractionModal({
         open={!!editing}
         onClose={() => setEditing(null)}
         title={`Xác minh ${fieldLabels[editing?.field ?? ""] ?? editing?.field}`}
-        description="Evidence gốc được giữ lại. Chỉnh value là quyết định của người rà soát, không phải OCR mới."
+        description="Bằng chứng gốc được giữ lại. Chỉnh nội dung là quyết định của người rà soát, không phải một lần nhận dạng chữ mới."
         footer={
           <>
             <Button variant="secondary" onClick={() => setEditing(null)}>
@@ -1645,7 +2478,7 @@ function RerunModal({
     try {
       await app.rerunReview(review.id, stage);
       app.notify(
-        "Đã gửi tác vụ chạy lại. Theo dõi tiến độ tại workspace.",
+        "Đã gửi yêu cầu chạy lại. Theo dõi tiến độ trên màn hình rà soát.",
         "info",
       );
       onClose();
@@ -1660,8 +2493,8 @@ function RerunModal({
     <Modal
       open={open}
       onClose={onClose}
-      title="Chạy lại một phần pipeline"
-      description="Giữ file gốc và các bước trước đó. Các finding được tạo lại phải được chuyên viên xác nhận lại."
+      title="Chạy lại một phần quy trình"
+      description="Giữ nguyên file gốc và các bước trước đó. Mọi phát hiện được tạo lại cần chuyên viên xác nhận."
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
@@ -1682,20 +2515,23 @@ function RerunModal({
         value={stage}
         onChange={(e) => setStage(e.target.value as PipelineStep["stage"])}
       >
-        <option value="ocr">OCR → extraction → rules</option>
+        <option value="ocr">
+          Nhận dạng chữ (OCR) → trích xuất → bộ quy tắc
+        </option>
         <option value="rules">
-          Rules → verification (giữ extracted values)
+          Bộ quy tắc → xác minh (giữ nguyên nội dung đã trích xuất)
         </option>
       </Select>
       <div style={{ marginTop: 20 }}>
         <InlineNotice tone="warning">
-          Quyết định accept / dismiss cũ không được tự dùng lại. Báo cáo đã phát
-          hành không bị chỉnh sửa; review đã đóng cần phiên bản nhãn mới.
+          Quyết định xác nhận / loại trừ cũ không được tự dùng lại. Báo cáo đã
+          phát hành không bị chỉnh sửa; lượt rà soát đã đóng cần phiên bản nhãn
+          mới.
         </InlineNotice>
       </div>
       <div style={{ marginTop: 20 }}>
         <Checkbox checked={confirmed} onChange={setConfirmed}>
-          Tôi đồng ý tạo lại finding và xác nhận lại các quyết định.
+          Tôi đồng ý tạo lại các phát hiện và xác nhận lại quyết định xử lý.
         </Checkbox>
       </div>
     </Modal>

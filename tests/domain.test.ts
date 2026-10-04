@@ -14,12 +14,16 @@ import {
   parseNetQuantity,
   validateStructuredExtraction,
 } from "../src/lib/extraction";
-import { approvalIssues, buildReportSnapshot } from "../src/lib/reports";
+import {
+  approvalIssues,
+  buildReportSnapshot,
+  reportDisposition,
+} from "../src/lib/reports";
 import { runRuleRegression } from "../src/lib/regression";
 import { DEMO_ACTOR } from "../src/lib/constants";
 import { can } from "../src/lib/permissions";
 import { assertTransition } from "../src/lib/workflow";
-import type { OcrResult } from "../src/lib/types";
+import type { AppData, OcrResult } from "../src/lib/types";
 function fixture() {
   const data = createSeedData();
   const review = data.reviews.find((r) => r.status === "HUMAN_REVIEW")!;
@@ -28,6 +32,43 @@ function fixture() {
     (l) => l.id === review.label_version_id,
   )!;
   return { data, review, product, label, fields: label.extracted_fields };
+}
+function prepareApprovedRegistry(data: AppData): AppData {
+  const contentHash = "d".repeat(64);
+  data.sources = data.sources.map((source) => ({
+    ...source,
+    status: "CURRENT",
+    content_hash: contentHash,
+    retrieved_at: new Date().toISOString(),
+    approved_by: DEMO_ACTOR.id,
+    approved_at: new Date().toISOString(),
+  }));
+  data.rules = data.rules.map((rule) => ({
+    ...rule,
+    status: "ACTIVE",
+    test_status: "passed",
+    approved_by: DEMO_ACTOR.id,
+    effective_from: "2026-01-01",
+    source_snapshot: rule.source_citations.map((id) => {
+      const source = data.sources.find((item) => item.id === id)!;
+      return {
+        id: source.id,
+        version: source.version,
+        content_hash: source.content_hash,
+      };
+    }),
+  }));
+  data.reviews = data.reviews.map((review) => ({
+    ...review,
+    rule_snapshot: review.rule_snapshot?.map((rule) => ({
+      ...rule,
+      source_versions: rule.source_versions.map((source) => ({
+        ...source,
+        content_hash: contentHash,
+      })),
+    })),
+  }));
+  return data;
 }
 const ocr: OcrResult = {
   model: "synthetic-ocr",
@@ -92,6 +133,7 @@ describe("Conservative domain checks and provenance", () => {
   });
   it("missing fields never count as satisfying identity, net weight or ingredients", () => {
     const f = fixture();
+    prepareApprovedRegistry(f.data);
     const result = evaluateRules({
       product: f.product,
       fields: f.fields.map((field) => ({ ...field, value: null })),
@@ -154,6 +196,23 @@ describe("Conservative domain checks and provenance", () => {
       expect(classifyClaim(claim).classification).toBe("DISEASE_CLAIM");
     },
   );
+  it("routes disease claims as expert-only signals without an automated violation finding", () => {
+    const f = fixture();
+    prepareApprovedRegistry(f.data);
+    const result = evaluateRules({
+      product: { ...f.product, claims: ["Helps treat diabetes"] },
+      fields: f.fields,
+      rules: f.data.rules,
+      sources: f.data.sources,
+      reviewId: f.review.id,
+    });
+    expect(
+      result.findings.some((finding) => finding.rule_key === "CLAIM-001"),
+    ).toBe(false);
+    expect(result.warnings).toContain(
+      "Phát hiện dấu hiệu tuyên bố liên quan bệnh lý; chuyển chuyên gia phân loại. Hệ thống không tự tạo phát hiện vi phạm pháp luật.",
+    );
+  });
   it("English brand text alone does not verify all English required information", () => {
     const partial = {
       ...ocr,
@@ -246,7 +305,7 @@ describe("Conservative domain checks and provenance", () => {
         f.data.sources,
         f.product,
       ),
-    ).toThrow(/registry/);
+    ).toThrow(/danh mục nguồn/);
     expect(() =>
       verifyFindings(
         [{ ...finding, title: "FDA approved" }],
@@ -256,6 +315,28 @@ describe("Conservative domain checks and provenance", () => {
     ).toThrow(/cấm/);
   });
 });
+
+function addInProgressVeximRequest(
+  data: AppData,
+  review: AppData["reviews"][number],
+) {
+  const request = {
+    id: "vexim-request-domain-test",
+    review_id: review.id,
+    organization_id: review.organization_id,
+    requested_by: "demo-owner",
+    requested_role: "label_owner" as const,
+    requested_at: "2026-01-04T00:00:00.000Z",
+    label_version_id: review.label_version_id,
+    artwork_hash: "a".repeat(64),
+    status: "IN_PROGRESS" as const,
+    reviewer_id: DEMO_ACTOR.id,
+    started_at: "2026-01-04T00:05:00.000Z",
+    completed_at: null,
+  };
+  data.veximReviewRequests = [request];
+  return request;
+}
 
 describe("Human approval and frozen reports", () => {
   it("customer/admin capabilities cannot approve or modify law", () => {
@@ -274,7 +355,7 @@ describe("Human approval and frozen reports", () => {
   it("blocks open findings, missing decisions, stale rules and remote unscanned files", () => {
     const f = fixture();
     expect(
-      approvalIssues(f.data, f.review).some((s) => s.includes("finding")),
+      approvalIssues(f.data, f.review).some((s) => s.includes("phát hiện")),
     ).toBe(true);
     f.data.findings = f.data.findings.map((x) =>
       x.review_id === f.review.id
@@ -286,50 +367,95 @@ describe("Human approval and frozen reports", () => {
           }
         : x,
     );
-    expect(approvalIssues(f.data, f.review)).toEqual([]);
+    const draftBlockers = approvalIssues(f.data, f.review);
+    expect(draftBlockers).toContain(
+      "Bộ quy tắc đã thay đổi hoặc hết hiệu lực. Hãy chạy lại lượt rà soát trước khi ký duyệt.",
+    );
+    expect(f.data.rules.every((rule) => rule.status === "DRAFT")).toBe(true);
     expect(approvalIssues(f.data, f.review, true)).toContain(
-      "File gốc phải hoàn thành malware scan trước khi phê duyệt báo cáo.",
+      "File gốc phải hoàn tất quét mã độc thật trước khi ký duyệt báo cáo.",
+    );
+    f.data.rules = f.data.rules.map((rule) => ({
+      ...rule,
+      status: "ACTIVE",
+      test_status: "passed",
+      approved_by: DEMO_ACTOR.id,
+    }));
+    expect(approvalIssues(f.data, f.review)).toContain(
+      "Nguồn đã thay đổi, chưa được phê duyệt hoặc hết hiệu lực kể từ lần rà soát. Hãy rà soát lại.",
     );
     f.data.rules[0].status = "SUPERSEDED";
     expect(
-      approvalIssues(f.data, f.review).some((i) => i.includes("rules")),
+      approvalIssues(f.data, f.review).some((i) => i.includes("quy tắc")),
     ).toBe(true);
   });
   it("freezes dossier/evidence and preserves disclaimer rather than legal approval", () => {
     const f = fixture();
-    f.data.findings = f.data.findings.map((x) =>
-      x.review_id === f.review.id
+    const signable = prepareApprovedRegistry(structuredClone(f.data));
+    const review = signable.reviews.find((r) => r.id === f.review.id)!;
+    signable.findings = signable.findings.map((finding) =>
+      finding.review_id === review.id
         ? {
-            ...x,
+            ...finding,
             status: "accepted",
+            citation_pending: false,
             reviewer_comment: "Synthetic reviewer decision only.",
             reviewed_by: DEMO_ACTOR.id,
           }
-        : x,
+        : finding,
     );
-    f.data.products.find((p) => p.id === f.product.id)!.name =
+    signable.products.find((product) => product.id === f.product.id)!.name =
       "Later mutable product name";
+    const rationale = "Snapshot is a synthetic preliminary review.";
+    expect(reportDisposition(signable, review)).toBe("NEEDS_CORRECTION");
+    expect(approvalIssues(signable, review)).toContain(
+      "Chưa có yêu cầu Vexim Review đang xử lý hợp lệ cho đúng phiên bản nhãn; chưa thể phát hành hoặc ký báo cáo Vexim.",
+    );
+    expect(() =>
+      buildReportSnapshot(
+        signable,
+        review,
+        DEMO_ACTOR,
+        rationale,
+        true,
+        "missing-request",
+      ),
+    ).toThrow(/yêu cầu Vexim Review/);
+    const request = addInProgressVeximRequest(signable, review);
     const report = buildReportSnapshot(
-      f.data,
-      f.review,
+      signable,
+      review,
       DEMO_ACTOR,
-      "Snapshot is a synthetic preliminary review.",
+      rationale,
       true,
+      request.id,
     );
     expect(report.product.name).toBe(f.product.name);
     expect(report.demo).toBe(true);
     expect(report.disclaimer).toContain("not FDA approval");
+    expect(report.schema_version).toBe("1.2");
+    expect(report.vexim_review_request).toMatchObject({
+      id: request.id,
+      label_version_id: review.label_version_id,
+      artwork_hash: "a".repeat(64),
+    });
+    expect(report.approved_by).toBe(DEMO_ACTOR.id);
+    expect(report.disposition).toBe("NEEDS_CORRECTION");
+    expect(report.result).toBe(report.disposition);
+    expect(report.rationale).toBe(rationale);
     expect(report.result).toBe("NEEDS_CORRECTION");
     const oldName = report.product.name;
-    f.product.name = "Changed after report";
+    signable.products.find((product) => product.id === f.product.id)!.name =
+      "Changed after report";
     expect(report.product.name).toBe(oldName);
     expect(() =>
       buildReportSnapshot(
-        f.data,
-        f.review,
+        signable,
+        review,
         { ...DEMO_ACTOR, role: "customer_admin" },
         "Disallowed customer approval.",
         true,
+        request.id,
       ),
     ).toThrow(/quyền/);
   });

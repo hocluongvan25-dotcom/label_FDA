@@ -113,9 +113,9 @@ export function SourcesPage() {
     setEditing({
       id: uid(),
       source_key: "",
-      authority: "FDA",
+      authority: "eCFR",
       agency: "FDA",
-      document_type: "guidance",
+      document_type: "regulation",
       citation: "",
       title: "",
       canonical_url: "",
@@ -274,7 +274,7 @@ export function SourcesPage() {
             <thead>
               <tr>
                 <th>CITATION / TÀI LIỆU</th>
-                <th>CƠ QUAN</th>
+                <th>AUTHORITY / ISSUING AGENCY</th>
                 <th>CHỦ ĐỀ</th>
                 <th>PHIÊN BẢN</th>
                 <th>TRẠNG THÁI</th>
@@ -297,7 +297,18 @@ export function SourcesPage() {
                     </button>
                     <span className="source-row-sub">{s.title}</span>
                   </td>
-                  <td>{s.agency}</td>
+                  <td>
+                    <div className="source-row-meta">
+                      <span>
+                        <strong>Authority:</strong>{" "}
+                        {s.authority || "Chưa ghi nhận"}
+                      </span>
+                      <span>
+                        <strong>Issuing agency:</strong>{" "}
+                        {s.agency || "Chưa ghi nhận"}
+                      </span>
+                    </div>
+                  </td>
                   <td>
                     <Badge>{topicLabels[s.topic] ?? s.topic}</Badge>
                   </td>
@@ -390,7 +401,8 @@ export function SourcesPage() {
           <>
             {selected.raw_snapshot_id && (
               <InlineNotice tone="info">
-                Nguồn từ API · issue {selected.issue_date} ·{" "}
+                Nguồn từ API · issue {selected.issue_date ?? "không áp dụng"} ·
+                revision {selected.document_revision_date ?? selected.document_revision_label ?? "không có"} ·{" "}
                 {selected.ingestion_status}. Raw SHA-256:{" "}
                 <code style={{ overflowWrap: "anywhere" }}>
                   {selected.raw_content_hash}
@@ -409,7 +421,10 @@ export function SourcesPage() {
                 {selected.status}
               </Badge>
               <Badge>v{selected.version}</Badge>
-              <Badge>{selected.agency}</Badge>
+              <Badge>Authority: {selected.authority || "Chưa ghi nhận"}</Badge>
+              <Badge>
+                Issuing agency: {selected.agency || "Chưa ghi nhận"}
+              </Badge>
               <Badge>Ưu tiên {selected.priority}</Badge>
               <ExternalLink href={selected.canonical_url}>
                 Văn bản chính thức
@@ -419,18 +434,66 @@ export function SourcesPage() {
               className="description-list source-detail"
               style={{ padding: 0 }}
             >
+              <dt>Source ID</dt>
+              <dd>
+                <code>{selected.id}</code>
+              </dd>
+              <dt>Authority</dt>
+              <dd>{selected.authority || "Chưa ghi nhận"}</dd>
+              <dt>Issuing agency</dt>
+              <dd>{selected.agency || "Chưa ghi nhận"}</dd>
               <dt>Source key</dt>
               <dd>{selected.source_key}</dd>
+              <dt>API URL</dt>
+              <dd>
+                {selected.api_url ? (
+                  <a
+                    href={selected.api_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {selected.api_url}
+                  </a>
+                ) : (
+                  "Chưa có API snapshot"
+                )}
+              </dd>
+              <dt>Canonical URL</dt>
+              <dd>
+                <a
+                  href={selected.canonical_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {selected.canonical_url}
+                </a>
+              </dd>
+              <dt>Issue date</dt>
+              <dd>{selected.issue_date ?? "Chưa có snapshot"}</dd>
               <dt>Truy xuất</dt>
               <dd>
-                {selected.retrieved_at
-                  ? formatDate(selected.retrieved_at, true)
-                  : "Chưa có bản chụp nguồn"}
+                {selected.retrieved_at ? (
+                  <>
+                    {formatDate(selected.retrieved_at, true)} ·{" "}
+                    <code>{selected.retrieved_at}</code>
+                  </>
+                ) : (
+                  "Chưa có bản chụp nguồn"
+                )}
               </dd>
-              <dt>Hiệu lực</dt>
+              <dt>Raw snapshot ID</dt>
               <dd>
-                {selected.effective_from ?? "Chưa xác minh ngày bắt đầu"} →{" "}
-                {selected.effective_to ?? "Chưa ghi nhận ngày kết thúc"}
+                <code>{selected.raw_snapshot_id ?? "Chưa có snapshot"}</code>
+              </dd>
+              <dt>Parser version</dt>
+              <dd>{selected.parser_version ?? "Chưa parse"}</dd>
+              <dt>Effective date</dt>
+              <dd>
+                {selected.effective_date_unknown === true
+                  ? "UNKNOWN — cần xác minh"
+                  : selected.effective_from
+                    ? `${selected.effective_from} → ${selected.effective_to ?? "chưa có ngày kết thúc"}`
+                    : "Chưa xác minh"}
               </dd>
               <dt>Người phê duyệt</dt>
               <dd>
@@ -438,11 +501,15 @@ export function SourcesPage() {
                 {selected.approved_at &&
                   ` · ${formatDate(selected.approved_at, true)}`}
               </dd>
-              <dt>SHA-256 snapshot</dt>
+              <dt>SHA-256 nội dung nguồn đã lưu</dt>
               <dd className="source-hash">
                 {app.mode === "demo" && selected.content_hash === "d".repeat(64)
                   ? "HASH MẪU — KHÔNG PHẢI BẢN CHỤP TÀI LIỆU THỰC"
                   : (selected.content_hash ?? "Chưa có")}
+              </dd>
+              <dt>Raw body SHA-256</dt>
+              <dd className="source-hash">
+                {selected.raw_content_hash ?? "Chưa có raw snapshot"}
               </dd>
               <dt>Rules tham chiếu</dt>
               <dd>
@@ -542,8 +609,17 @@ export function SourcesPage() {
                 hint="Allowlist: eCFR, FDA, U.S. Code, govinfo, USDA AMS, CBP, Federal Register."
               />
             </div>
+            <Input
+              label="Authority"
+              required
+              value={editing.authority}
+              onChange={(e) =>
+                setEditing({ ...editing, authority: e.target.value })
+              }
+              hint="Ví dụ: eCFR, Federal Register, FDA hoặc U.S. Code."
+            />
             <Select
-              label="Cơ quan"
+              label="Issuing agency"
               value={editing.agency}
               onChange={(e) =>
                 setEditing({ ...editing, agency: e.target.value })

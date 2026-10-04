@@ -14,7 +14,10 @@ import type { PGlite } from "@electric-sql/pglite";
 import { createDatabase, actor, call, ids } from "./helpers/database";
 import { runRuleRegression } from "../src/lib/regression";
 import { RULE_CATALOG, SOURCE_CATALOG } from "../src/lib/regulatory";
-import { parseEcfrXml } from "../src/lib/ecfr-parser";
+import {
+  ECFR_PARSER_VERSION,
+  parseEcfrXml,
+} from "../src/lib/ecfr-parser";
 import type {
   KnowledgeSnapshot,
   RegulatoryIngestionJob,
@@ -96,6 +99,7 @@ async function fetched(date = day, body?: Buffer) {
         citation: "21 CFR Part 101",
         title: "SYNTHETIC TEST ONLY",
         source_version: date,
+        parser_version: ECFR_PARSER_VERSION,
         issue_date: date,
         canonical_url: `https://www.ecfr.gov/on/${date}/title-21/chapter-I/subchapter-B/part-101`,
       },
@@ -174,6 +178,157 @@ async function retrieve(asof = day, topic = "nutrition_labeling") {
     "{eCFR,FDA}",
     4,
   ]);
+}
+async function fdaDraft(
+  kind: "fda_label_claims_html" | "fda_food_label_guide_pdf",
+) {
+  const html = kind === "fda_label_claims_html";
+  const job = await queued(kind);
+  const source = html
+    ? {
+        key: "fda-label-claims",
+        url: "https://www.fda.gov/food/nutrition-food-labeling-and-critical-foods/label-claims-conventional-foods-and-dietary-supplements",
+        citation: "FDA Label Claims Guidance",
+        title: "Label claims for conventional foods and dietary supplements",
+        format: "HTML",
+        parser: "vexim-fda-html/1.0.0",
+        revision: "2024-04-05",
+        revision_label: null,
+        section: "heading:health-claims",
+        heading: "Health Claims",
+        topic: "claims",
+        content:
+          "Health claims describe a relationship between a food substance and reduced risk of disease. This is parser output only, not a legal conclusion.",
+        citation_precision: "heading",
+        anchor:
+          "https://www.fda.gov/food/nutrition-food-labeling-and-critical-foods/label-claims-conventional-foods-and-dietary-supplements#health-claims",
+      }
+    : {
+        key: "fda-food-label-guide",
+        url: "https://www.fda.gov/files/food/published/Food-Labeling-Guide-%28PDF%29.pdf",
+        citation: "FDA Food Labeling Guide",
+        title: "A Food Labeling Guide",
+        format: "PDF",
+        parser: "vexim-fda-pdf/1.0.0",
+        revision: null,
+        revision_label: "January 2013",
+        section: "page:1",
+        heading: "Introduction",
+        topic: "general",
+        content:
+          "The guide answers common questions about food labeling. PDF page-level extraction remains DRAFT.",
+        citation_precision: "page",
+        anchor:
+          "https://www.fda.gov/files/food/published/Food-Labeling-Guide-%28PDF%29.pdf#page=1",
+      };
+  const bytes = Buffer.from(
+    html ? "<html>synthetic FDA HTML</html>" : "%PDF-1.7 synthetic PDF body",
+  );
+  const rawId = randomUUID();
+  const rawKey = `fda_guidance/${rawId}/response.${html ? "html" : "pdf"}`;
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  await db.query(
+    "insert into storage.objects(bucket_id,name) values('regulatory-raw',$1)",
+    [rawKey],
+  );
+  await db.query(
+    "insert into public.regulatory_api_responses(id,family,cache_key,api_url,response_status,content_type,content_hash,byte_size,raw_storage_key,retrieved_at,expires_at,latency_ms,validated) values($1,'fda_guidance',$2,$3,200,$4,$5,$6,$7,now(),now()+interval '1 day',20,true)",
+    [
+      rawId,
+      `fda_guidance:${source.key}`,
+      source.url,
+      html ? "text/html; charset=utf-8" : "application/pdf",
+      hash,
+      bytes.length,
+      rawKey,
+    ],
+  );
+  const snapshot = await call<KnowledgeSnapshot>(
+    db,
+    "vexim_record_regulatory_snapshot",
+    [
+      job.id,
+      worker,
+      {
+        raw_response_id: rawId,
+        source_key: source.key,
+        source_version: source.revision ?? `sha256:${hash}`,
+        document_revision_date: source.revision,
+        document_revision_label: source.revision_label,
+        parser_version: source.parser,
+        citation: source.citation,
+        title: source.title,
+        canonical_url: source.url,
+        metadata: {
+          format: source.format,
+          authority: "FDA",
+          issuing_agency: "FDA",
+          document_type: "guidance",
+          document_revision_label: source.revision_label,
+        },
+      },
+    ],
+  );
+  const sectionData = [
+    {
+      section: source.section,
+      heading: source.heading,
+      topic: source.topic,
+      content: source.content,
+      reserved: false,
+    },
+  ];
+  const chunkData = [
+    {
+      chunk_key: `${source.section}:0`,
+      section: source.section,
+      citation:
+        source.citation_precision === "page"
+          ? `${source.citation}, PDF page 1`
+          : `${source.citation} — ${source.heading}`,
+      heading: source.heading,
+      content: source.content,
+      topic: source.topic,
+      topics: [source.topic],
+      hierarchy: [
+        {
+          type: html ? "heading" : "page",
+          identifier: html ? "health-claims" : "1",
+          heading: source.heading,
+        },
+      ],
+      obligation_type: "guidance",
+      paragraph_path: html ? [] : ["page", "1"],
+      citation_precision: source.citation_precision,
+      sequence: 0,
+      source_anchor: source.anchor,
+    },
+  ];
+  const validation = {
+    parser_version: source.parser,
+    root_tag: html ? "html" : "pdf",
+    section_count: 1,
+    paragraph_count: 1,
+    heading_count: html ? 1 : 0,
+    page_count: html ? undefined : 1,
+    processed_page_count: html ? undefined : 1,
+    text_page_count: html ? undefined : 1,
+    chunk_count: 1,
+    coverage_ratio: 1,
+    coverage_complete: true,
+    citations_valid: true,
+    warnings: [],
+    missing_sections: [],
+  };
+  await call(db, "vexim_stage_fda_guidance", [
+    job.id,
+    worker,
+    snapshot.id,
+    sectionData,
+    chunkData,
+    validation,
+  ]);
+  return { job, snapshot, source, rawId, hash };
 }
 describe("API knowledge PostgreSQL: raw immutability, approvals, citations and job leases", () => {
   it("restricts customer/reviewer ingestion and raw metadata/storage to Regulatory Admin", async () => {
@@ -680,6 +835,86 @@ describe("API knowledge PostgreSQL: raw immutability, approvals, citations and j
       ]),
     ).toEqual([]);
   });
+  it.each([
+    ["fda_label_claims_html", "HTML", "heading"] as const,
+    ["fda_food_label_guide_pdf", "PDF", "page"] as const,
+  ])(
+    "stores FDA %s raw bytes, citations and provenance as DRAFT",
+    async (kind, format, precision) => {
+      const v = await fdaDraft(kind);
+      const snapshot = await db.query<Record<string, unknown>>(
+        "select status,source_family,document_revision_date,document_revision_label,content_hash,chunk_count,parser_version,metadata from public.regulatory_snapshots where id=$1",
+        [v.snapshot.id],
+      );
+      expect(snapshot.rows[0]).toMatchObject({
+        status: "DRAFT",
+        source_family: "fda_guidance",
+        document_revision_label: format === "PDF" ? "January 2013" : null,
+        content_hash: v.hash,
+        chunk_count: 1,
+        parser_version:
+          format === "HTML" ? "vexim-fda-html/1.0.0" : "vexim-fda-pdf/1.0.0",
+        metadata: {
+          document_revision_label:
+            format === "PDF" ? "January 2013" : null,
+        },
+      });
+      const sourceRow = await db.query<Record<string, unknown>>(
+        "select id,status,authority,agency,document_type,raw_snapshot_id,raw_content_hash,parser_version,ingestion_status,document_revision_date,document_revision_label from public.regulatory_sources where source_key=$1",
+        [v.source.key],
+      );
+      expect(sourceRow.rows[0]).toMatchObject({
+        status: "DRAFT",
+        authority: "FDA",
+        agency: "FDA",
+        document_type: "guidance",
+        document_revision_label: format === "PDF" ? "January 2013" : null,
+        raw_snapshot_id: v.snapshot.id,
+        raw_content_hash: v.hash,
+        parser_version:
+          format === "HTML" ? "vexim-fda-html/1.0.0" : "vexim-fda-pdf/1.0.0",
+        ingestion_status: "DRAFT",
+      });
+      const chunks = await db.query<Record<string, unknown>>(
+        "select review_status,citation,citation_precision,source_anchor,embedding from public.regulatory_chunks where snapshot_id=$1",
+        [v.snapshot.id],
+      );
+      expect(chunks.rows).toHaveLength(1);
+      expect(chunks.rows[0].review_status).toBe("DRAFT");
+      expect(chunks.rows[0].citation_precision).toBe(precision);
+      expect(chunks.rows[0].embedding).toBeNull();
+      await actor(db, ids.regA);
+      expect(await retrieve(day, "claims")).toEqual([]);
+      expect(
+        (
+          await db.query(
+            "select id from public.compliance_rules where status='ACTIVE' and $1=any(source_citations)",
+            [sourceRow.rows[0].id],
+          )
+        ).rows,
+      ).toHaveLength(0);
+
+      const sourceId = String(sourceRow.rows[0].id);
+      await actor(db, null, "service_role");
+      await query(
+        "update public.regulatory_sources set created_by=$1 where id=$2",
+        [ids.regA, sourceId],
+      );
+      await actor(db, ids.regB);
+      await expect(
+        call(db, "vexim_approve_source", [sourceId]),
+      ).rejects.toThrow(/expert-review/i);
+      expect(
+        (
+          await db.query<{ status: string }>(
+            "select status from public.regulatory_sources where id=$1",
+            [sourceId],
+          )
+        ).rows[0].status,
+      ).toBe("DRAFT");
+    },
+  );
+
   it("requires fresh affected-definition QA, retains failed runs and prevents a false fixture pass", async () => {
     const first = await active();
     const source = (

@@ -4,6 +4,10 @@ import type {
   LegalSearchTerm,
 } from "@/lib/knowledge-types";
 import { LEGAL_SEARCH_TERMS } from "@/lib/knowledge-types";
+import {
+  FDA_GUIDANCE_SOURCES,
+  type FdaGuidanceSourceKey,
+} from "@/lib/fda-guidance";
 
 export class RegulatoryApiError extends Error {
   constructor(
@@ -40,7 +44,7 @@ export interface ApiDocument {
   cache_hit: boolean;
 }
 export interface RegulatoryRequestEvent {
-  family: "ecfr" | "federal_register";
+  family: "ecfr" | "federal_register" | "fda_guidance";
   api_url: string;
   response_status: number | null;
   error_code: string | null;
@@ -141,6 +145,45 @@ export class RegulatoryHttpClient {
     ))
       url.searchParams.set(key, value);
     const cacheKey = `${family}|${url.pathname}|${url.searchParams.toString()}`;
+    return this.request(
+      family,
+      url,
+      cacheKey,
+      format,
+      ttlHours,
+      force,
+      this.options.maxBytes ?? 20 * 1024 * 1024,
+    );
+  }
+  async fdaDocument(
+    sourceKey: FdaGuidanceSourceKey,
+    force = false,
+  ): Promise<ApiDocument> {
+    const source = FDA_GUIDANCE_SOURCES[sourceKey];
+    const format = source.format.toLowerCase() as "html" | "pdf";
+    const url = new URL(source.canonical_url);
+    const cacheKey = `fda_guidance|${sourceKey}|${url.href}`;
+    const formatLimit =
+      format === "html" ? 5 * 1024 * 1024 : 20 * 1024 * 1024;
+    return this.request(
+      "fda_guidance",
+      url,
+      cacheKey,
+      format,
+      24 * 30,
+      force,
+      Math.min(this.options.maxBytes ?? 20 * 1024 * 1024, formatLimit),
+    );
+  }
+  private async request(
+    family: "ecfr" | "federal_register" | "fda_guidance",
+    url: URL,
+    cacheKey: string,
+    format: "json" | "xml" | "html" | "pdf",
+    ttlHours: number,
+    force: boolean,
+    maxBytes: number,
+  ): Promise<ApiDocument> {
     if (!force) {
       const hit = await this.options.store?.get(cacheKey);
       if (
@@ -162,11 +205,20 @@ export class RegulatoryHttpClient {
       let receivedStatus: number | null = null;
       const timeout = AbortSignal.timeout(this.options.timeoutMs ?? 30000);
       try {
+        const accept =
+          format === "xml"
+            ? "application/xml, text/xml;q=0.9"
+            : format === "html"
+              ? "text/html, application/xhtml+xml;q=0.9"
+              : format === "pdf"
+                ? "application/pdf"
+                : "application/json";
         const response = await this.fetcher(url, {
           method: "GET",
           headers: {
-            Accept: format === "xml" ? "application/xml" : "application/json",
-            "Accept-Encoding": "gzip, deflate",
+            Accept: accept,
+            "Accept-Encoding":
+              family === "fda_guidance" ? "identity" : "gzip, deflate",
             "User-Agent": `VeximLabelReview/0.1 (+mailto:${this.options.contact})`,
           },
           redirect: "manual",
@@ -184,13 +236,12 @@ export class RegulatoryHttpClient {
           "content-encoding",
           "cache-control",
         ]) {
-          const v = response.headers.get(key);
-          if (v) headers[key] = v.slice(0, 2000);
+          const value = response.headers.get(key);
+          if (value) headers[key] = value.slice(0, 2000);
         }
         const parts: Uint8Array[] = [];
         let count = 0;
-        const max = this.options.maxBytes ?? 20 * 1024 * 1024;
-        if (Number(response.headers.get("content-length") ?? 0) > max) {
+        if (Number(response.headers.get("content-length") ?? 0) > maxBytes) {
           await response.body?.cancel();
           throw new RegulatoryApiError(
             "RESPONSE_TOO_LARGE",
@@ -204,7 +255,7 @@ export class RegulatoryHttpClient {
               const part = await reader.read();
               if (part.done) break;
               count += part.value.length;
-              if (count > max) {
+              if (count > maxBytes) {
                 await reader.cancel();
                 throw new RegulatoryApiError(
                   "RESPONSE_TOO_LARGE",
@@ -218,28 +269,39 @@ export class RegulatoryHttpClient {
         }
         const body = new Uint8Array(count);
         let offset = 0;
-        for (const p of parts) {
-          body.set(p, offset);
-          offset += p.length;
+        for (const part of parts) {
+          body.set(part, offset);
+          offset += part.length;
         }
         const contentType = headers["content-type"] ?? "";
-        let validated =
-          response.status === 200 &&
-          ((format === "xml" && /\b(?:xml|text\/plain)\b/i.test(contentType)) ||
-            (format === "json" && /\bjson\b/i.test(contentType)));
-        if (validated) {
+        const essence = contentType.split(";")[0]?.trim().toLowerCase() ?? "";
+        let validated = false;
+        if (response.status === 200) {
           try {
-            if (format === "json")
-              JSON.parse(
-                new TextDecoder("utf-8", { fatal: true }).decode(body),
+            if (format === "json" && /\bjson\b/i.test(contentType)) {
+              JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+              validated = true;
+            } else if (
+              format === "xml" &&
+              /\b(?:xml|text\/plain)\b/i.test(contentType)
+            ) {
+              const xml = new TextDecoder("utf-8", { fatal: true }).decode(body);
+              validated =
+                /^\s*(?:<\?xml[^>]*>\s*)?</.test(xml) &&
+                !/<html(?:\s|>)/i.test(xml);
+            } else if (
+              format === "html" &&
+              ["text/html", "application/xhtml+xml"].includes(essence)
+            ) {
+              const html = new TextDecoder("utf-8", { fatal: true }).decode(body);
+              validated =
+                /<html(?:\s|>)/i.test(html) && /<body(?:\s|>)/i.test(html);
+            } else if (format === "pdf" && essence === "application/pdf") {
+              const signature = new TextDecoder("latin1").decode(
+                body.subarray(0, 1024),
               );
-            else if (
-              !/^\s*(?:<\?xml[^>]*>\s*)?</.test(
-                new TextDecoder().decode(body),
-              ) ||
-              /<html(?:\s|>)/i.test(new TextDecoder().decode(body))
-            )
-              validated = false;
+              validated = /%PDF-\d\.\d/.test(signature);
+            }
           } catch {
             validated = false;
           }
@@ -283,17 +345,17 @@ export class RegulatoryHttpClient {
           finished_at: retrievedAt,
           latency_ms: doc.meta.latency_ms,
         });
-        recorded = true; // Save error/invalid bodies too, before parsing or raising.
+        recorded = true;
         if (response.status === 404) throw new SourceNotFoundError();
         if (response.status !== 200) {
-          const ra = headers["retry-after"];
-          const seconds = ra
-            ? Number(ra) ||
-              Math.max(0, (Date.parse(ra) - this.now().getTime()) / 1000)
+          const retryAfter = headers["retry-after"];
+          const seconds = retryAfter
+            ? Number(retryAfter) ||
+              Math.max(0, (Date.parse(retryAfter) - this.now().getTime()) / 1000)
             : 0;
           throw new RegulatoryApiError(
             `HTTP_${response.status}`,
-            `Official API returned HTTP ${response.status}.`,
+            `Official response returned HTTP ${response.status}.`,
             retryStatuses.has(response.status),
             response.status,
             Math.min(3600, Math.max(0, seconds)),
@@ -301,7 +363,7 @@ export class RegulatoryHttpClient {
         }
         if (!validated)
           throw new SourceParseError(
-            "Official response has an unexpected content type or invalid JSON/XML.",
+            "Official response has an unexpected MIME type or invalid body format.",
           );
         return doc;
       } catch (error) {
@@ -315,8 +377,8 @@ export class RegulatoryHttpClient {
                   ? "UPSTREAM_TIMEOUT"
                   : "UPSTREAM_NETWORK",
                 timeout.aborted
-                  ? "Official API request timed out."
-                  : "Cannot reach the official API over HTTPS.",
+                  ? "Official source request timed out."
+                  : "Cannot reach the official source over HTTPS.",
                 true,
               );
         if (!recorded)
@@ -340,6 +402,7 @@ export class RegulatoryHttpClient {
     }
     throw last!;
   }
+
 }
 export function documentJson<T>(document: ApiDocument): T {
   try {
@@ -415,6 +478,17 @@ export class EcfrClient {
     );
   }
 }
+
+export class FdaGuidanceClient {
+  constructor(private http: RegulatoryHttpClient) {}
+  labelClaims(force = false) {
+    return this.http.fdaDocument("fda-label-claims", force);
+  }
+  foodLabelGuide(force = false) {
+    return this.http.fdaDocument("fda-food-label-guide", force);
+  }
+}
+
 export interface FederalRegisterDocument {
   document_number: string;
   title: string;

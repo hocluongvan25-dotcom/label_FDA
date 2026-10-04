@@ -170,7 +170,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       n.href === "/" ? pathname === "/" : pathname.startsWith(n.href),
     )
     .at(-1);
-  const tasks = app.data.reviews.filter((r) => needsAction(r.status));
+  const tasks = app.data.reviews.filter((r) => needsAction(r.status, r.triage_route));
   const notifications = [
     ...app.data.requests
       .filter((r) => r.status === "open")

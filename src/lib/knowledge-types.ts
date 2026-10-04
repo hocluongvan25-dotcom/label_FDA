@@ -31,7 +31,12 @@ export type KnowledgeStatus =
   | "FETCH_FAILED"
   | "PARSE_FAILED";
 export type IngestionKind =
-  "ecfr_part101" | "ecfr_section" | "ecfr_discovery" | "fr_monitor";
+  | "ecfr_part101"
+  | "ecfr_section"
+  | "ecfr_discovery"
+  | "fr_monitor"
+  | "fda_label_claims_html"
+  | "fda_food_label_guide_pdf";
 export interface RegulatoryIngestionJob {
   id: string;
   kind: IngestionKind;
@@ -51,7 +56,7 @@ export interface RegulatoryIngestionJob {
 }
 export interface ApiSnapshotResponse {
   id: string;
-  family: "ecfr" | "federal_register";
+  family: "ecfr" | "federal_register" | "fda_guidance";
   cache_key: string;
   api_url: string;
   response_status: number;
@@ -78,7 +83,12 @@ export interface ParsedRegulatoryChunk {
   cross_references?: string[];
   obligation_type: string;
   paragraph_path: string[];
-  citation_precision: "section" | "paragraph" | "unresolved";
+  citation_precision:
+    | "section"
+    | "paragraph"
+    | "heading"
+    | "page"
+    | "unresolved";
   sequence: number;
   source_anchor: string;
 }
@@ -95,8 +105,20 @@ export interface ParserValidation {
   section_count: number;
   paragraph_count: number;
   chunk_count: number;
+  heading_count?: number;
+  page_count?: number;
+  processed_page_count?: number;
+  text_page_count?: number;
+  source_character_count?: number;
+  extracted_character_count?: number;
+  coverage_ratio?: number;
   coverage_complete: boolean;
+  /** Citation string/content checks only; does not mean paragraph precision was resolved. */
   citations_valid: boolean;
+  /** Number of eCFR chunks whose paragraph label could not be placed safely in the hierarchy. */
+  unresolved_citation_count?: number;
+  /** False when at least one paragraph-level citation remains unresolved. */
+  citation_paths_resolved?: boolean;
   warnings: string[];
   missing_sections: string[];
   regression_passed?: boolean;
@@ -105,7 +127,7 @@ export interface ParserValidation {
 export interface KnowledgeSnapshot {
   id: string;
   source_key: string;
-  source_family: "ecfr" | "federal_register";
+  source_family: "ecfr" | "federal_register" | "fda_guidance";
   citation: string;
   title: string;
   api_url: string;
@@ -116,6 +138,8 @@ export interface KnowledgeSnapshot {
   effective_to: string | null;
   effective_date_unknown: boolean;
   raw_response_id: string;
+  document_revision_date: string | null;
+  document_revision_label: string | null;
   content_hash: string;
   parser_version: string | null;
   status: KnowledgeStatus;

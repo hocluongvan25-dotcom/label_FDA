@@ -6,6 +6,20 @@ export type Role =
   | "system_admin";
 export type Severity = "critical" | "major" | "minor" | "information";
 export type FindingStatus = "open" | "accepted" | "dismissed";
+export type ReviewPartyRole =
+  | "label_owner"
+  | "commercial_importer"
+  | "fsvp_importer";
+export type ReviewParticipantStatus = "invited" | "active" | "removed";
+export type ReviewPartyDecisionType =
+  | "accepted"
+  | "changes_requested"
+  | "proposed_edit";
+export type ReviewCollaborationStatus =
+  | "not_shared"
+  | "awaiting_importer"
+  | "changes_requested"
+  | "mutually_accepted";
 export type ReviewStatus =
   | "DRAFT"
   | "INTAKE_PENDING"
@@ -30,6 +44,44 @@ export type ProductCategory =
   | "other";
 export type SourceStatus = "DRAFT" | "CURRENT" | "SUPERSEDED" | "UNAVAILABLE";
 export type RuleStatus = "DRAFT" | "ACTIVE" | "SUPERSEDED";
+export type TriageRoute =
+  | "OUT_OF_SCOPE"
+  | "BLOCKED_REGULATORY_SOURCE"
+  | "EXPERT_REVIEW_REQUIRED"
+  | "NEEDS_CUSTOMER_INFORMATION"
+  | "AUTO_SCREENED";
+export type TriageOverallResult =
+  | "NOT_ASSESSED"
+  | "NO_AUTOMATED_ISSUE_DETECTED"
+  | "POTENTIAL_ISSUES_FOUND"
+  | "NO_ISSUE_DETECTED_IN_SCOPE"
+  | "NEEDS_CORRECTION"
+  | "INSUFFICIENT_INFORMATION"
+  | "BLOCKED"
+  | "OUT_OF_SCOPE";
+export type ReportDisposition =
+  | "NEEDS_CORRECTION"
+  | "NO_ISSUE_DETECTED_IN_SCOPE"
+  | "INSUFFICIENT_INFORMATION";
+export type TriageReportStatus =
+  | "NOT_ISSUED"
+  | "BLOCKED"
+  | "DISABLED"
+  | "PRE_SCREENING_ISSUED"
+  | "FINAL_REPORT_ISSUED";
+export type ExpertReviewStatus =
+  "NOT_REQUIRED" | "PENDING" | "IN_PROGRESS" | "EXPERT_REVIEWED";
+export interface TriageReason {
+  gate:
+    | "OUT_OF_SCOPE"
+    | "BLOCKED_REGULATORY_SOURCE"
+    | "EXPERT_REVIEW_REQUIRED"
+    | "NEEDS_CUSTOMER_INFORMATION";
+  code: string;
+  message: string;
+  source_id?: string;
+  rule_key?: string;
+}
 export type ClaimClass =
   | "MARKETING_ONLY"
   | "NUTRIENT_CONTENT_CLAIM"
@@ -171,11 +223,20 @@ export interface Finding {
   ai_confidence: number | null;
   reasoning_category:
     | "field_presence"
-    | "classification"
+    | "net_quantity"
+    | "nutrition"
+    | "nutrition_claim_exemption"
     | "allergen"
-    | "claim"
+    | "sesame"
+    | "disease_claim"
+    | "nutrient_claim"
+    | "certification_claim"
     | "consistency"
     | "readability"
+    | "language"
+    | "party"
+    | "classification"
+    | "claim"
     | "manual";
   human_review_required: boolean;
   reviewer_comment: string | null;
@@ -197,6 +258,15 @@ export interface Review {
   label_version_id: string;
   review_scope: "us_federal_food_labeling_mvp";
   status: ReviewStatus;
+  collaboration_status?: ReviewCollaborationStatus;
+  triage_route?: TriageRoute;
+  overall_result?: TriageOverallResult;
+  report_status?: TriageReportStatus;
+  expert_review_status?: ExpertReviewStatus;
+  triage_reasons?: TriageReason[];
+  triage_risk_score?: number;
+  triage_policy_version?: string;
+  triage_evaluated_at?: string | null;
   progress: number;
   assigned_to: string;
   created_at: string;
@@ -216,13 +286,31 @@ export interface Review {
       id: string;
       version: number;
       content_hash: string | null;
+      snapshot_id?: string;
+      raw_content_hash?: string | null;
+      issue_date?: string | null;
+      parser_version?: string | null;
     }[];
   }[];
   missing_information?: string[];
 }
+export interface PreScreeningReport {
+  id: string;
+  review_id: string;
+  organization_id: string;
+  product_id: string;
+  label_version_id: string;
+  triage_run_id: string;
+  version: number;
+  disclaimer_profile: "PRE_SCREENING_ONLY";
+  snapshot: Record<string, unknown>;
+  created_at: string;
+}
 export interface RegulatorySource {
   api_url?: string | null;
   issue_date?: string | null;
+  document_revision_date?: string | null;
+  document_revision_label?: string | null;
   raw_snapshot_id?: string | null;
   raw_content_hash?: string | null;
   parser_version?: string | null;
@@ -268,6 +356,7 @@ export interface ComplianceRule {
     content_hash: string | null;
   }[];
   definition_hash?: string;
+  test_hash?: string | null;
   status: RuleStatus;
   effective_from: string | null;
   effective_to: string | null;
@@ -286,6 +375,56 @@ export interface CustomerRequest {
   created_by: string;
   created_at: string;
 }
+export type VeximReviewRequestStatus = "REQUESTED" | "IN_PROGRESS" | "COMPLETED";
+export interface VeximReviewRequest {
+  id: string;
+  review_id: string;
+  organization_id: string;
+  requested_by: string;
+  requested_role: "label_owner" | "commercial_importer";
+  requested_at: string;
+  label_version_id: string;
+  artwork_hash: string;
+  status: VeximReviewRequestStatus;
+  reviewer_id: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+}
+export interface ReviewParticipant {
+  id: string;
+  review_id: string;
+  organization_id: string;
+  organization_name_snapshot: string;
+  party_role: ReviewPartyRole;
+  status: ReviewParticipantStatus;
+  invited_by: string;
+  invited_at: string;
+  activated_by: string | null;
+  activated_at: string | null;
+  fsvp_attested_by: string | null;
+  fsvp_attested_at: string | null;
+  fsvp_attestation_note: string | null;
+  created_at: string;
+}
+export interface ReviewPartyDecisionEntry {
+  id: string;
+  review_id: string;
+  label_version_id: string;
+  participant_id: string;
+  party_role: "label_owner" | "commercial_importer";
+  decision: ReviewPartyDecisionType;
+  comment: string;
+  proposed_changes: {
+    field: string;
+    current_value?: string;
+    proposed_value: string;
+    reason: string;
+  }[];
+  label_bundle_sha256: string;
+  actor_id: string;
+  actor_name_snapshot: string;
+  created_at: string;
+}
 export interface AuditEntry {
   id: string;
   organization_id: string | null;
@@ -302,15 +441,27 @@ export interface ReportSnapshot {
   missing_information?: string[];
   customer_requests?: CustomerRequest[];
   rule_snapshot?: Review["rule_snapshot"];
-  schema_version: "1.0";
+  schema_version: "1.0" | "1.1" | "1.2";
   review_id: string;
+  vexim_review_request?: Pick<
+    VeximReviewRequest,
+    | "id"
+    | "requested_by"
+    | "requested_role"
+    | "requested_at"
+    | "label_version_id"
+    | "artwork_hash"
+  >;
   product: Product;
   label_version: LabelVersion;
   review_scope: string;
-  result:
-    | "NEEDS_CORRECTION"
-    | "NO_ISSUE_DETECTED_IN_SCOPE"
-    | "INSUFFICIENT_INFORMATION";
+  /** Explicit immutable reviewer outcome; optional only for legacy v1.0 snapshots. */
+  disposition?: ReportDisposition;
+  /** Reviewer identity and rationale are mirrored here for audit-friendly exports. */
+  approved_by?: string;
+  rationale?: string;
+  /** Kept as a backwards-compatible alias for existing report consumers. */
+  result: ReportDisposition;
   disclaimer: string;
   findings: Finding[];
   sources: RegulatorySource[];
@@ -325,6 +476,8 @@ export interface Report {
   organization_id: string;
   product_id: string;
   label_version_id: string;
+  vexim_review_request_id?: string | null;
+  artwork_sha256?: string | null;
   report_number: string;
   snapshot: ReportSnapshot;
   created_at: string;
@@ -347,7 +500,11 @@ export interface AppData {
   sources: RegulatorySource[];
   rules: ComplianceRule[];
   requests: CustomerRequest[];
+  veximReviewRequests: VeximReviewRequest[];
   reports: Report[];
+  reviewParticipants?: ReviewParticipant[];
+  partyDecisions?: ReviewPartyDecisionEntry[];
+  preScreeningReports?: PreScreeningReport[];
   audit: AuditEntry[];
 }
 export interface OcrBlock {

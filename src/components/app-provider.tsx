@@ -1462,11 +1462,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   };
   const saveSource = async (source: RegulatorySource) => {
     assertCan(actorRef.current, "regulatory");
-    if (source.content_excerpt.trim().length < 80 || !source.retrieved_at)
+    if (source.content_excerpt.trim().length < 80)
+      throw new Error("Bản chụp nội dung cần ít nhất 80 ký tự.");
+    if (!source.retrieved_at)
+      throw new Error("Cần thời điểm truy xuất (ngày lấy bản chụp).");
+    const retrieved = new Date(source.retrieved_at);
+    if (Number.isNaN(retrieved.getTime()))
       throw new Error(
-        "Nguồn cần bản chụp nội dung tối thiểu 80 ký tự và thời điểm truy xuất.",
+        "Thời điểm truy xuất không hợp lệ. Dùng YYYY-MM-DD hoặc ISO 8601.",
       );
-    const url = new URL(source.canonical_url);
+    // Mirrors vexim_save_source: a snapshot cannot be retrieved in the future.
+    if (retrieved.getTime() > Date.now() + 5 * 60_000)
+      throw new Error(
+        "Thời điểm truy xuất không được ở tương lai quá 5 phút so với thời điểm lưu.",
+      );
+    if (
+      source.effective_from &&
+      source.effective_to &&
+      source.effective_from > source.effective_to
+    )
+      throw new Error("Ngày hết hiệu lực phải sau ngày bắt đầu hiệu lực.");
+    let url: URL;
+    try {
+      url = new URL(source.canonical_url.trim());
+    } catch {
+      throw new Error(
+        "URL chính thức không hợp lệ. Cần một đường dẫn HTTPS đầy đủ.",
+      );
+    }
     if (
       url.protocol !== "https:" ||
       ![

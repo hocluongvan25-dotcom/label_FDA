@@ -30,6 +30,21 @@ export function getSupabase(): SupabaseClient {
     );
   return client;
 }
+/** API error that keeps the server's per-field validation messages. */
+export class ApiError extends Error {
+  readonly fields: { path: string; message: string }[];
+  constructor(
+    message: string,
+    fields: { path: string; message: string }[] = [],
+  ) {
+    super(message);
+    this.name = "ApiError";
+    this.fields = fields;
+  }
+}
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
 export async function api<T>(
   path: string,
   options: RequestInit = {},
@@ -49,9 +64,23 @@ export async function api<T>(
     cache: "no-store",
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok)
-    throw new Error(
-      body.error ?? `Không thực hiện được yêu cầu (${response.status}).`,
+  if (!response.ok) {
+    const fields: { path: string; message: string }[] = Array.isArray(
+      body.fields,
+    )
+      ? body.fields.filter(
+          (f: unknown) =>
+            f && typeof (f as { path?: unknown }).path === "string",
+        )
+      : [];
+    const base: string =
+      body.error ?? `Không thực hiện được yêu cầu (${response.status}).`;
+    throw new ApiError(
+      fields.length
+        ? `${base} ${fields.map((f) => `${f.path}: ${f.message}`).join(" · ")}`
+        : base,
+      fields,
     );
+  }
   return body as T;
 }

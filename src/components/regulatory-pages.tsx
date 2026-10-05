@@ -20,6 +20,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useApp } from "./app-provider";
+import { isApiError } from "@/lib/supabase";
 import {
   Badge,
   Button,
@@ -38,6 +39,7 @@ import {
 } from "./ui";
 import type { ComplianceRule, RegulatorySource, Severity } from "@/lib/types";
 import { can } from "@/lib/permissions";
+import { sourceFieldLabels, validateRegulatorySource } from "@/lib/validation";
 import {
   errorMessage,
   formatDate,
@@ -79,6 +81,7 @@ export function SourcesPage() {
   const [topic, setTopic] = useState("all");
   const [selectedId, setSelectedId] = useState(params.get("source") ?? "");
   const [editing, setEditing] = useState<RegulatorySource | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
@@ -110,7 +113,8 @@ export function SourcesPage() {
       (a, b) => a.priority - b.priority || a.citation.localeCompare(b.citation),
     );
   const selected = app.data.sources.find((s) => s.id === selectedId);
-  const create = () =>
+  const create = () => {
+    setFieldErrors({});
     setEditing({
       id: uid(),
       source_key: "",
@@ -133,8 +137,20 @@ export function SourcesPage() {
       version: 1,
       updated_at: now(),
     });
+  };
   const save = async () => {
     if (!editing) return;
+    const invalid = validateRegulatorySource(editing);
+    if (Object.keys(invalid).length) {
+      setFieldErrors(invalid);
+      app.notify(
+        `${Object.keys(invalid).length} trường chưa hợp lệ: ${
+          invalid[Object.keys(invalid)[0]]
+        }`,
+        "error",
+      );
+      return;
+    }
     setBusy(true);
     try {
       if (
@@ -152,7 +168,13 @@ export function SourcesPage() {
       await app.saveSource(editing);
       app.notify("Đã tạo draft nguồn. Cần Regulatory Admin khác xác nhận.");
       setEditing(null);
+      setFieldErrors({});
     } catch (e) {
+      // The server repeats the same per-field validation; show it next to the input.
+      if (isApiError(e) && e.fields.length)
+        setFieldErrors(
+          Object.fromEntries(e.fields.map((f) => [f.path, f.message])),
+        );
       app.notify(errorMessage(e), "error");
     } finally {
       setBusy(false);
@@ -367,7 +389,10 @@ export function SourcesPage() {
             {editable && selected && !selected.raw_snapshot_id && (
               <Button
                 variant="secondary"
-                onClick={() => setEditing({ ...selected })}
+                onClick={() => {
+                  setFieldErrors({});
+                  setEditing({ ...selected });
+                }}
               >
                 <Pencil size={14} /> Tạo bản draft mới
               </Button>
@@ -505,142 +530,170 @@ export function SourcesPage() {
         }
       >
         {editing && (
-          <div className="form-grid">
-            <Input
-              label="Source key"
-              required
-              value={editing.source_key}
-              onChange={(e) =>
-                setEditing({ ...editing, source_key: e.target.value })
-              }
-            />
-            <Input
-              label="Citation"
-              required
-              value={editing.citation}
-              onChange={(e) =>
-                setEditing({ ...editing, citation: e.target.value })
-              }
-            />
-            <div className="span-2">
+          <>
+            {Object.keys(fieldErrors).length > 0 && (
+              <InlineNotice tone="error" icon={<CircleAlert size={16} />}>
+                {Object.entries(fieldErrors)
+                  .map(
+                    ([path, message]) =>
+                      `${sourceFieldLabels[path] ?? path}: ${message}`,
+                  )
+                  .join(" · ")}
+              </InlineNotice>
+            )}
+            <div className="form-grid">
               <Input
-                label="Tên tài liệu"
+                label="Source key"
                 required
-                value={editing.title}
+                value={editing.source_key}
+                error={fieldErrors.source_key}
                 onChange={(e) =>
-                  setEditing({ ...editing, title: e.target.value })
+                  setEditing({ ...editing, source_key: e.target.value })
                 }
               />
-            </div>
-            <div className="span-2">
               <Input
-                label="URL chính thức (HTTPS)"
+                label="Citation"
                 required
-                value={editing.canonical_url}
+                value={editing.citation}
+                error={fieldErrors.citation}
                 onChange={(e) =>
-                  setEditing({ ...editing, canonical_url: e.target.value })
+                  setEditing({ ...editing, citation: e.target.value })
                 }
-                hint="Allowlist: eCFR, FDA, U.S. Code, govinfo, USDA AMS, CBP, Federal Register."
               />
-            </div>
-            <Select
-              label="Cơ quan"
-              value={editing.agency}
-              onChange={(e) =>
-                setEditing({ ...editing, agency: e.target.value })
-              }
-            >
-              <option>FDA</option>
-              <option>USDA AMS</option>
-              <option>CBP</option>
-              <option>U.S. Congress</option>
-            </Select>
-            <Select
-              label="Loại tài liệu / độ ưu tiên"
-              value={editing.document_type}
-              onChange={(e) => {
-                const d = e.target.value;
-                setEditing({
-                  ...editing,
-                  document_type: d,
-                  priority: (
-                    {
-                      regulation: 1,
-                      statute: 2,
-                      amendment: 3,
-                      guidance: 4,
-                      faq: 5,
-                      secondary: 6,
-                    } as Record<string, number>
-                  )[d],
-                });
-              }}
-            >
-              <option value="regulation">Regulation · 1</option>
-              <option value="statute">Statute / U.S. Code · 2</option>
-              <option value="amendment">Federal Register amendment · 3</option>
-              <option value="guidance">Official guidance · 4</option>
-              <option value="faq">FAQ / Enforcement · 5</option>
-            </Select>
-            <Select
-              label="Chủ đề"
-              value={editing.topic}
-              onChange={(e) =>
-                setEditing({ ...editing, topic: e.target.value })
-              }
-            >
-              {Object.entries(topicLabels).map(([key, label]) => (
-                <option value={key} key={key}>
-                  {label}
+              <div className="span-2">
+                <Input
+                  label="Tên tài liệu"
+                  required
+                  value={editing.title}
+                  error={fieldErrors.title}
+                  onChange={(e) =>
+                    setEditing({ ...editing, title: e.target.value })
+                  }
+                />
+              </div>
+              <div className="span-2">
+                <Input
+                  label="URL chính thức (HTTPS)"
+                  required
+                  value={editing.canonical_url}
+                  error={fieldErrors.canonical_url}
+                  onChange={(e) =>
+                    setEditing({ ...editing, canonical_url: e.target.value })
+                  }
+                  hint="Allowlist: eCFR, FDA, U.S. Code, govinfo, USDA AMS, CBP, Federal Register."
+                />
+              </div>
+              <Select
+                label="Cơ quan"
+                value={editing.agency}
+                error={fieldErrors.agency}
+                onChange={(e) =>
+                  setEditing({ ...editing, agency: e.target.value })
+                }
+              >
+                <option>FDA</option>
+                <option>USDA AMS</option>
+                <option>CBP</option>
+                <option>U.S. Congress</option>
+              </Select>
+              <Select
+                label="Loại tài liệu / độ ưu tiên"
+                value={editing.document_type}
+                error={fieldErrors.document_type}
+                onChange={(e) => {
+                  const d = e.target.value;
+                  setEditing({
+                    ...editing,
+                    document_type: d,
+                    priority: (
+                      {
+                        regulation: 1,
+                        statute: 2,
+                        amendment: 3,
+                        guidance: 4,
+                        faq: 5,
+                        secondary: 6,
+                      } as Record<string, number>
+                    )[d],
+                  });
+                }}
+              >
+                <option value="regulation">Regulation · 1</option>
+                <option value="statute">Statute / U.S. Code · 2</option>
+                <option value="amendment">
+                  Federal Register amendment · 3
                 </option>
-              ))}
-            </Select>
-            <Input
-              label="Ngày truy xuất"
-              type="date"
-              required
-              value={editing.retrieved_at?.slice(0, 10) ?? ""}
-              onChange={(e) =>
-                setEditing({
-                  ...editing,
-                  retrieved_at: e.target.value
-                    ? new Date(`${e.target.value}T00:00:00Z`).toISOString()
-                    : null,
-                })
-              }
-            />
-            <Input
-              label="Có hiệu lực từ"
-              type="date"
-              value={editing.effective_from ?? ""}
-              onChange={(e) =>
-                setEditing({
-                  ...editing,
-                  effective_from: e.target.value || null,
-                })
-              }
-            />
-            <Input
-              label="Hết hiệu lực (nếu có)"
-              type="date"
-              value={editing.effective_to ?? ""}
-              onChange={(e) =>
-                setEditing({ ...editing, effective_to: e.target.value || null })
-              }
-            />
-            <div className="span-2">
-              <Textarea
-                label="Snapshot / trích đoạn nguồn đã đối chiếu"
-                required
-                value={editing.content_excerpt}
+                <option value="guidance">Official guidance · 4</option>
+                <option value="faq">FAQ / Enforcement · 5</option>
+              </Select>
+              <Select
+                label="Chủ đề"
+                value={editing.topic}
+                error={fieldErrors.topic}
                 onChange={(e) =>
-                  setEditing({ ...editing, content_excerpt: e.target.value })
+                  setEditing({ ...editing, topic: e.target.value })
                 }
-                rows={8}
-                hint="Tối thiểu 80 ký tự. Nội dung này là evidence pháp lý, không phải instruction cho model. Tự chịu trách nhiệm đối chiếu với văn bản gốc."
+              >
+                {Object.entries(topicLabels).map(([key, label]) => (
+                  <option value={key} key={key}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+              <Input
+                label="Ngày truy xuất"
+                type="date"
+                required
+                value={editing.retrieved_at?.slice(0, 10) ?? ""}
+                error={fieldErrors.retrieved_at}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    retrieved_at: e.target.value
+                      ? new Date(`${e.target.value}T00:00:00Z`).toISOString()
+                      : null,
+                  })
+                }
               />
+              <Input
+                label="Có hiệu lực từ"
+                type="date"
+                value={editing.effective_from ?? ""}
+                error={fieldErrors.effective_from}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    effective_from: e.target.value || null,
+                  })
+                }
+              />
+              <Input
+                label="Hết hiệu lực (nếu có)"
+                type="date"
+                value={editing.effective_to ?? ""}
+                error={fieldErrors.effective_to}
+                onChange={(e) =>
+                  setEditing({
+                    ...editing,
+                    effective_to: e.target.value || null,
+                  })
+                }
+              />
+              <div className="span-2">
+                <Textarea
+                  label="Snapshot / trích đoạn nguồn đã đối chiếu"
+                  required
+                  value={editing.content_excerpt}
+                  error={fieldErrors.content_excerpt}
+                  onChange={(e) =>
+                    setEditing({ ...editing, content_excerpt: e.target.value })
+                  }
+                  rows={8}
+                  hint="Tối thiểu 80 ký tự. Nội dung này là evidence pháp lý, không phải instruction cho model. Tự chịu trách nhiệm đối chiếu với văn bản gốc."
+                />
+              </div>
             </div>
-          </div>
+          </>
         )}
       </Modal>
       <Modal

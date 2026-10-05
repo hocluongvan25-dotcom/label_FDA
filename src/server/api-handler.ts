@@ -15,6 +15,7 @@ import {
   findingPatchSchema,
   approvalSchema,
   partySchema,
+  regulatorySourceInputSchema,
 } from "@/lib/validation";
 import { validateFileBytes } from "@/lib/files";
 import { runRuleRegression } from "@/lib/regression";
@@ -121,29 +122,6 @@ const manifestSchema = z
   )
   .min(1)
   .max(MAX_FILES);
-const sourceSchema = z.object({
-  id: uuid,
-  source_key: z.string().trim().min(2).max(200),
-  authority: z.string().min(1).max(50),
-  agency: z.string().min(1).max(100),
-  document_type: z.enum([
-    "regulation",
-    "statute",
-    "amendment",
-    "guidance",
-    "faq",
-    "secondary",
-  ]),
-  citation: z.string().trim().min(2).max(200),
-  title: z.string().trim().min(2).max(2000),
-  canonical_url: z.url(),
-  topic: z.string().min(1).max(100),
-  priority: z.number().int().min(1).max(6),
-  retrieved_at: z.iso.datetime(),
-  effective_from: z.string().nullable(),
-  effective_to: z.string().nullable(),
-  content_excerpt: z.string().trim().min(80).max(500_000),
-});
 const manualSchema = z.object({
   title: z.string().trim().min(2).max(1000),
   description: z.string().trim().min(10).max(10000),
@@ -772,7 +750,7 @@ export async function apiHandler(request: Request, segments: string[]) {
     } else if (method === "POST" && path === "regulatory/sources") {
       requireStaff(ctx, "regulatory_admin");
       result = await rpc(ctx.db, "vexim_save_source", {
-        p: sourceSchema.parse(await readJson(request)),
+        p: regulatorySourceInputSchema.parse(await readJson(request)),
       });
     } else if (
       method === "POST" &&

@@ -72,14 +72,15 @@ Tiến trình hợp lệ: `validation` (scan + normalize) → `ocr` → `extract
 
 ## 5. Xử lý sự cố
 
-| Hiện tượng                                            | Nguyên nhân thường gặp                          | Xử lý                                                                  |
-| ----------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- |
-| 0% mãi, “Chưa có worker nào nhận tác vụ”              | Worker chưa chạy hoặc khác project Supabase     | Chạy worker cùng `.env.local`; xem log container                       |
-| Job `retry`, lỗi “Malware scanner chưa được cấu hình” | Thiếu `CLAMAV_HOST` trong môi trường **worker** | Cấu hình ClamAV cho worker; `ALLOW_UNSCANNED_DEV_UPLOADS` chỉ dùng dev |
-| Job `running` nhưng lease hết hạn                     | Worker bị dừng/mất kết nối giữa chừng           | Job tự trở lại hàng đợi; kiểm tra log và độ ổn định kết nối            |
-| `dead_letter`                                         | Quá 3 lần thử (file hỏng, scanner, OCR)         | Khắc phục nguyên nhân rồi “Chạy lại kiểm tra” từ bước phù hợp          |
-| Đến bước `rules` rồi `SOURCE_UNAVAILABLE`             | Chưa đủ 15 rules ACTIVE hoặc nguồn hết hiệu lực | Làm mục 3; kiểm tra `/knowledge`                                       |
-| Không mở được file nhãn                               | File chưa `scan_status = clean`                 | Chờ worker quét; đây là chốt an toàn, không bypass                     |
+| Hiện tượng                                            | Nguyên nhân thường gặp                          | Xử lý                                                                                                                       |
+| ----------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 0% mãi, “Chưa có worker nào nhận tác vụ”              | Worker chưa chạy hoặc khác project Supabase     | Chạy worker cùng `.env.local`; xem log container                                                                            |
+| Job `retry`, lỗi “Malware scanner chưa được cấu hình” | Thiếu `CLAMAV_HOST` trong môi trường **worker** | Cấu hình ClamAV cho worker; `ALLOW_UNSCANNED_DEV_UPLOADS` chỉ dùng dev                                                      |
+| Job `running` nhưng lease hết hạn                     | Worker bị dừng/mất kết nối giữa chừng           | Job tự trở lại hàng đợi; kiểm tra log và độ ổn định kết nối                                                                 |
+| `dead_letter`                                         | Quá 3 lần thử (file hỏng, scanner, OCR)         | Khắc phục nguyên nhân rồi “Chạy lại kiểm tra” từ bước phù hợp                                                               |
+| Đến bước `rules` rồi `SOURCE_UNAVAILABLE`             | Chưa đủ 15 rules ACTIVE hoặc nguồn hết hiệu lực | Làm mục 3; kiểm tra `/knowledge`                                                                                            |
+| Không mở được file nhãn                               | File chưa `scan_status = clean`                 | Chờ worker quét; đây là chốt an toàn, không bypass                                                                          |
+| Lưu draft nguồn báo “Dữ liệu đầu vào chưa hợp lệ”     | Một trường không qua validation                 | Modal hiện lỗi ngay dưới từng ô và trong thông báo; kiểm tra Ngày truy xuất, URL HTTPS, snapshot ≥ 80 ký tự, độ ưu tiên 1–6 |
 
 ## 6. Nhật ký và giám sát
 

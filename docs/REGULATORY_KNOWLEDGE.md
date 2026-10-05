@@ -106,6 +106,18 @@ Parser SAX (`saxes`) thực thi, không dùng regex để đọc toàn bộ XML 
 
 Withdrawal loại nguồn khỏi auto retrieval ngay; không xóa raw/history/reports. Có audit và lý do. Không thể dùng manual source editor để thay API-backed source.
 
+## FDA Guidance · quy trình đánh giá chuyên gia (migration 0004)
+
+Guidance của FDA **không phải quy định và không ràng buộc pháp lý**, nên không thể duyệt như một CFR section. eCFR/FR (regulations) đi theo mục “Quy trình review / activation” ở trên; tài liệu có `document_type` chứa _guidance/guideline_ đi theo quy trình riêng này:
+
+1. Đăng ký draft như bình thường (bản chụp ≥ 80 ký tự, `retrieved_at`, URL chính thức, hash do DB tính từ nội dung).
+2. **Admin A – đánh giá chuyên gia** (UI: Nguồn pháp lý → mở guidance DRAFT; hoặc RPC `vexim_review_guidance_source`): xác nhận 9 mục checklist (`document_identity`, `official_url`, `issue_date`, `content_hash`, `guidance_status`, `binding_effect`, `scope`, `citations_traceable`, `affected_rules`), phân loại tình trạng văn bản (final/draft/withdrawn/superseded), hiệu lực pháp lý (guidance FDA = `non_binding`) và mô tả phạm vi áp dụng ≥ 40 ký tự. Draft guidance cần thêm `draft_guidance_ack`; alert `critical` chưa xử lý cần `override_reason` ≥ 20 ký tự.
+3. Nếu có rule ACTIVE trích dẫn nguồn này: chạy regression (`POST /regulatory/sources/:id/regression`) trên đúng hash hiện tại; kết quả do service ghi, không phải do client khai báo.
+4. **Admin B – phê duyệt độc lập**: `vexim_approve_source` yêu cầu đánh giá chuyên gia còn tươi (đúng `version` + `content_hash`), người duyệt **khác** người đánh giá, tình trạng final/draft, `binding_effect = non_binding`. Khi đạt: source `CURRENT`, `ingestion_status = ACTIVE` và audit `regulatory.guidance_approved`.
+5. Mọi thay đổi nội dung (version/hash mới) làm đánh giá cũ hết hiệu lực: phải đánh giá lại. Bản ghi đánh giá là append-only (`regulatory_guidance_reviews`), có RLS và trigger chống sửa/xóa.
+
+Không có đường tắt: không tự động tạo đánh giá, không tự động duyệt, không seed nội dung hay chữ ký.
+
 ## Retrieval / RAG contract
 
 `POST /api/v1/regulatory/knowledge/retrieve` là full-text PostgreSQL (English), không gọi LLM/government. Filters: topic, US_FEDERAL, dry_packaged_tea/tea_bag, review as-of, eCFR/FDA authority allowlist. Chỉ matching **ACTIVE snapshot + current registered section version/hash + APPROVED chunk**, effective/as-of hợp lệ, citation không unresolved. No lexical match trả `[]`, không giả hit hay missing-data pass. Tối đa 4×6.000 ký tự; `truncated` được ghi rõ.

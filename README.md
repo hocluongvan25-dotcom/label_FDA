@@ -34,6 +34,7 @@ Demo có thể đổi giữa 5 persona tại **Cài đặt**. Đây là mô ph�
    - `supabase/migrations/0001_initial.sql`
    - `supabase/migrations/0002_registry_seed.sql`
    - `supabase/migrations/0003_regulatory_ingestion.sql`
+   - `supabase/migrations/0004_guidance_expert_review.sql` (expert-review workflow cho tài liệu dạng FDA Guidance)
 2. Sao chép `.env.example` thành `.env.local`. Điền project URL/public anon key cho browser và **service-role key chỉ ở server/worker**. Không đưa secret vào `NEXT_PUBLIC_*`, repository hoặc chat.
 3. Trong Supabase Auth, đặt Site URL/redirect allowlist đúng domain app; bật xác nhận email. Cấu hình SMTP nếu dùng lời mời doanh nghiệp.
 4. Tạo/xác nhận tài khoản Auth. Cấp staff bằng công cụ trusted (không qua metadata signup):

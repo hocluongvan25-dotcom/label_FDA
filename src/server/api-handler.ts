@@ -1,4 +1,5 @@
 import { regulatoryKnowledgeApi } from "./regulatory/api";
+import { verifySourceRegression } from "./regulatory/regression";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import type {
@@ -17,6 +18,7 @@ import {
   partySchema,
   regulatorySourceInputSchema,
 } from "@/lib/validation";
+import { guidanceReviewInputSchema } from "@/lib/regulatory-guidance";
 import { validateFileBytes } from "@/lib/files";
 import { runRuleRegression } from "@/lib/regression";
 import { RULE_CATALOG } from "@/lib/regulatory";
@@ -160,6 +162,36 @@ function requireStaff(
       403,
       "Thao tác này yêu cầu vai trò nhân viên Vexim phù hợp.",
     );
+}
+/**
+ * Attaches the newest expert-review record to every source so the UI can explain
+ * exactly why a guidance document is (or is not) ready for approval.
+ */
+async function withGuidanceReviews(
+  db: ServerContext["db"],
+  rows: Record<string, unknown>[],
+): Promise<Record<string, unknown>[]> {
+  if (!rows.length) return rows;
+  const { data, error } = await db
+    .from("regulatory_guidance_reviews")
+    .select(
+      "id,source_id,reviewer,guidance_status,binding_effect,scope_note,checklist,source_version,content_hash,created_at",
+    )
+    .in(
+      "source_id",
+      rows.map((r) => String(r.id)),
+    )
+    .order("created_at", { ascending: false });
+  if (error) throw dbError(error);
+  const latest = new Map<string, Record<string, unknown>>();
+  for (const review of data ?? []) {
+    const key = String(review.source_id);
+    if (!latest.has(key)) latest.set(key, review);
+  }
+  return rows.map((row) => ({
+    ...row,
+    expert_review: latest.get(String(row.id)) ?? null,
+  }));
 }
 async function getLabel(ctx: ServerContext, id: string): Promise<LabelVersion> {
   const label = await row<LabelVersion>(
@@ -746,7 +778,10 @@ export async function apiHandler(request: Request, segments: string[]) {
         );
       const { data, error } = await q.order("priority");
       if (error) throw dbError(error);
-      result = data;
+      result = await withGuidanceReviews(
+        ctx.db,
+        (data ?? []) as Record<string, unknown>[],
+      );
     } else if (method === "POST" && path === "regulatory/sources") {
       requireStaff(ctx, "regulatory_admin");
       result = await rpc(ctx.db, "vexim_save_source", {
@@ -764,6 +799,43 @@ export async function apiHandler(request: Request, segments: string[]) {
         sid: uuid.parse(segments[2]),
       });
       result = { approved: true };
+    } else if (
+      method === "POST" &&
+      segments[0] === "regulatory" &&
+      segments[1] === "sources" &&
+      segments[3] === "expert-review" &&
+      segments.length === 4
+    ) {
+      requireStaff(ctx, "regulatory_admin");
+      const body = guidanceReviewInputSchema.parse(await readJson(request));
+      result = {
+        review_id: await rpc<string>(ctx.db, "vexim_review_guidance_source", {
+          sid: uuid.parse(segments[2]),
+          checklist: body.checklist,
+          guidance_status: body.guidance_status,
+          binding_effect: body.binding_effect,
+          scope_note: body.scope_note,
+        }),
+      };
+    } else if (
+      method === "POST" &&
+      segments[0] === "regulatory" &&
+      segments[1] === "sources" &&
+      segments[3] === "regression" &&
+      segments.length === 4
+    ) {
+      requireStaff(ctx, "regulatory_admin");
+      const body = z
+        .object({ expected_hash: z.string().regex(/^[a-f0-9]{64}$/) })
+        .strict()
+        .parse(await readJson(request));
+      // The service role records the result; a client may never declare its own.
+      result = await verifySourceRegression(
+        serviceClient(),
+        uuid.parse(segments[2]),
+        body.expected_hash,
+        ctx.actor.id,
+      );
     } else if (method === "GET" && path === "regulatory/rules") {
       requireStaff(ctx);
       const { data, error } = await ctx.db

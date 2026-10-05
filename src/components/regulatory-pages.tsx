@@ -37,8 +37,30 @@ import {
   SeverityBadge,
   Textarea,
 } from "./ui";
-import type { ComplianceRule, RegulatorySource, Severity } from "@/lib/types";
+import type {
+  ComplianceRule,
+  GuidanceReviewSummary,
+  RegulatorySource,
+  Severity,
+} from "@/lib/types";
 import { can } from "@/lib/permissions";
+import {
+  bindingEffectLabels,
+  bindingEffects,
+  guidanceApprovalBlockers,
+  guidanceChecklistKeys,
+  guidanceChecklistLabels,
+  guidanceReviewInputSchema,
+  guidanceStatusLabels,
+  guidanceStatuses,
+  isGuidanceDocument,
+  missingGuidanceChecklist,
+  translateGuidanceError,
+  type BindingEffect,
+  type GuidanceChecklist,
+  type GuidanceReviewInput,
+  type GuidanceStatus,
+} from "@/lib/regulatory-guidance";
 import { sourceFieldLabels, validateRegulatorySource } from "@/lib/validation";
 import {
   errorMessage,
@@ -85,6 +107,9 @@ export function SourcesPage() {
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
+  const [regressions, setRegressions] = useState<
+    Record<string, { hash: string; passed: boolean }>
+  >({});
   const fromQuery = params.get("source");
   useEffect(() => {
     if (fromQuery) setSelectedId(fromQuery);
@@ -113,6 +138,62 @@ export function SourcesPage() {
       (a, b) => a.priority - b.priority || a.citation.localeCompare(b.citation),
     );
   const selected = app.data.sources.find((s) => s.id === selectedId);
+  const affectedRules = selected
+    ? app.data.rules.filter(
+        (r) =>
+          r.status === "ACTIVE" && r.source_citations.includes(selected.id),
+      ).length
+    : 0;
+  const regressionFresh =
+    !!selected?.content_hash &&
+    regressions[selected.id]?.hash === selected.content_hash &&
+    regressions[selected.id]?.passed === true;
+  const guidanceBlockers =
+    selected && selected.status === "DRAFT"
+      ? guidanceApprovalBlockers({
+          source: selected,
+          actorId: app.actor.id,
+          affectedRules,
+          regressionFresh,
+        })
+      : [];
+  const reviewGuidance = async (input: GuidanceReviewInput) => {
+    if (!selected) return;
+    try {
+      await app.reviewGuidanceSource(selected.id, input);
+      app.notify("Đã ghi nhận đánh giá chuyên gia. Cần admin khác phê duyệt.");
+    } catch (e) {
+      app.notify(translateGuidanceError(errorMessage(e)), "error");
+      throw e;
+    }
+  };
+  const runRegression = async () => {
+    if (!selected?.content_hash) {
+      app.notify(
+        "Nguồn chưa có bản chụp nội dung để chạy regression.",
+        "error",
+      );
+      return;
+    }
+    try {
+      const passed = await app.runSourceRegression(
+        selected.id,
+        selected.content_hash,
+      );
+      setRegressions((r) => ({
+        ...r,
+        [selected.id]: { hash: selected.content_hash as string, passed },
+      }));
+      app.notify(
+        passed
+          ? "Regression đạt. Có thể ghi nhận đánh giá chuyên gia."
+          : "Regression chưa đạt (15/15). Xem chi tiết và xử lý trước khi duyệt.",
+        passed ? "success" : "error",
+      );
+    } catch (e) {
+      app.notify(translateGuidanceError(errorMessage(e)), "error");
+    }
+  };
   const create = () => {
     setFieldErrors({});
     setEditing({
@@ -189,7 +270,7 @@ export function SourcesPage() {
       setApprovalOpen(false);
       setConfirm(false);
     } catch (e) {
-      app.notify(errorMessage(e), "error");
+      app.notify(translateGuidanceError(errorMessage(e)), "error");
     } finally {
       setBusy(false);
     }
@@ -482,6 +563,18 @@ export function SourcesPage() {
                   .join(", ") || "Chưa có rule active sử dụng"}
               </dd>
             </dl>
+            {isGuidanceDocument(selected.document_type) &&
+              selected.status === "DRAFT" && (
+                <GuidanceExpertReview
+                  source={selected}
+                  actorId={app.actor.id}
+                  affectedRules={affectedRules}
+                  regressionFresh={regressionFresh}
+                  onSubmit={(input) => reviewGuidance(input)}
+                  onRunRegression={() => runRegression()}
+                  busy={busy}
+                />
+              )}
             <h3 style={{ fontSize: 12, marginTop: 23 }}>
               Nội dung snapshot / trích đoạn đã lưu
             </h3>
@@ -707,7 +800,7 @@ export function SourcesPage() {
               Hủy
             </Button>
             <Button
-              disabled={!confirm}
+              disabled={!confirm || guidanceBlockers.length > 0}
               loading={busy}
               onClick={() => void approve()}
             >
@@ -720,6 +813,19 @@ export function SourcesPage() {
           Hãy đối chiếu URL chính thức, effective date, nội dung bản chụp và
           hash trước khi xác nhận. Phê duyệt metadata đơn thuần không đủ.
         </InlineNotice>
+        {guidanceBlockers.length > 0 && (
+          <div style={{ marginTop: 18 }}>
+            <InlineNotice tone="error" icon={<CircleAlert size={16} />}>
+              Tài liệu dạng guidance cần hoàn tất đánh giá chuyên gia trước khi
+              phê duyệt:
+              <ul style={{ margin: "8px 0 0 18px", padding: 0 }}>
+                {guidanceBlockers.map((b) => (
+                  <li key={b}>{b}</li>
+                ))}
+              </ul>
+            </InlineNotice>
+          </div>
+        )}
         <div style={{ marginTop: 22 }}>
           <Checkbox checked={confirm} onChange={setConfirm}>
             Tôi đã đối chiếu nguồn, xác nhận nội dung / hiệu lực và không phải
@@ -727,6 +833,223 @@ export function SourcesPage() {
           </Checkbox>
         </div>
       </Modal>
+    </div>
+  );
+}
+/**
+ * FDA guidance is not a regulation and is not legally binding, so it cannot be
+ * approved like a CFR section: a named expert must first attest to the document
+ * identity, its status, its scope and the rules it affects. Approval stays a
+ * separate act by a different Regulatory Admin.
+ */
+function GuidanceExpertReview({
+  source,
+  actorId,
+  affectedRules,
+  regressionFresh,
+  onSubmit,
+  onRunRegression,
+  busy,
+}: {
+  source: RegulatorySource;
+  actorId: string;
+  affectedRules: number;
+  regressionFresh: boolean;
+  onSubmit: (input: GuidanceReviewInput) => Promise<void>;
+  onRunRegression: () => Promise<void>;
+  busy: boolean;
+}) {
+  const review: GuidanceReviewSummary | null = source.expert_review ?? null;
+  const fresh =
+    !!review &&
+    review.source_version === source.version &&
+    review.content_hash === source.content_hash;
+  const [checklist, setChecklist] = useState<GuidanceChecklist>({});
+  const [guidanceStatus, setGuidanceStatus] = useState<GuidanceStatus>("final");
+  const [bindingEffect, setBindingEffect] =
+    useState<BindingEffect>("non_binding");
+  const [scopeNote, setScopeNote] = useState("");
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+  const toggle = (key: string, value: boolean) =>
+    setChecklist((c) => ({ ...c, [key]: value ? "true" : "false" }));
+  const submit = async () => {
+    const parsed = guidanceReviewInputSchema.safeParse({
+      checklist,
+      guidance_status: guidanceStatus,
+      binding_effect: bindingEffect,
+      scope_note: scopeNote,
+    });
+    if (!parsed.success) {
+      setErrors(
+        Object.fromEntries(
+          parsed.error.issues.map((i) => [
+            String(i.path[i.path.length - 1] ?? "form"),
+            i.message,
+          ]),
+        ),
+      );
+      return;
+    }
+    setErrors({});
+    setSaving(true);
+    try {
+      await onSubmit(parsed.data);
+      setChecklist({});
+      setScopeNote("");
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (fresh && review)
+    return (
+      <div style={{ marginTop: 22 }}>
+        <h3 style={{ fontSize: 12 }}>Đánh giá chuyên gia · FDA Guidance</h3>
+        <InlineNotice icon={<ClipboardCheck size={16} />}>
+          Đã ghi nhận đánh giá chuyên gia v{review.source_version} ·{" "}
+          {guidanceStatusLabels[review.guidance_status as GuidanceStatus] ??
+            review.guidance_status}{" "}
+          ·{" "}
+          {review.binding_effect === "non_binding"
+            ? "không ràng buộc pháp lý"
+            : "được ghi nhận là ràng buộc pháp lý"}
+          {review.created_at ? ` · ${formatDate(review.created_at, true)}` : ""}
+        </InlineNotice>
+        <p className="tiny muted" style={{ marginTop: 10 }}>
+          Phạm vi áp dụng đã ghi nhận: {review.scope_note}
+        </p>
+        <p className="tiny" style={{ marginTop: 8 }}>
+          {review.reviewer === actorId
+            ? "Bạn là người đánh giá chuyên gia văn bản này. Phê duyệt phải do một Regulatory Admin khác thực hiện."
+            : "Bước tiếp theo: một Regulatory Admin khác (không phải người đánh giá) phê duyệt nguồn này."}
+        </p>
+      </div>
+    );
+  return (
+    <div style={{ marginTop: 22 }}>
+      <h3 style={{ fontSize: 12 }}>Đánh giá chuyên gia · FDA Guidance</h3>
+      <InlineNotice tone="warning" icon={<ClipboardCheck size={16} />}>
+        Guidance của FDA không phải quy định và không ràng buộc pháp lý. Trước
+        khi được phê duyệt, một Regulatory Admin phải ghi nhận đánh giá chuyên
+        gia (đúng văn bản, tình trạng, hiệu lực, phạm vi áp dụng).{" "}
+        {review
+          ? `Đánh giá gần nhất đã cũ (v${review.source_version}); cần đánh giá lại phiên bản hiện tại.`
+          : "Nguồn này chưa có đánh giá chuyên gia."}
+      </InlineNotice>
+      <div className="form-grid" style={{ marginTop: 16 }}>
+        <Select
+          label="Tình trạng văn bản"
+          value={guidanceStatus}
+          onChange={(e) => setGuidanceStatus(e.target.value as GuidanceStatus)}
+        >
+          {guidanceStatuses.map((s) => (
+            <option key={s} value={s}>
+              {guidanceStatusLabels[s]}
+            </option>
+          ))}
+        </Select>
+        <Select
+          label="Hiệu lực pháp lý"
+          value={bindingEffect}
+          hint="Guidance FDA mặc định không ràng buộc."
+          onChange={(e) => setBindingEffect(e.target.value as BindingEffect)}
+        >
+          {bindingEffects.map((b) => (
+            <option key={b} value={b}>
+              {bindingEffectLabels[b]}
+            </option>
+          ))}
+        </Select>
+        <div className="span-2">
+          <Textarea
+            label="Phạm vi và điều kiện áp dụng"
+            required
+            rows={3}
+            value={scopeNote}
+            error={errors.scope_note}
+            onChange={(e) => setScopeNote(e.target.value)}
+            hint="Tối thiểu 40 ký tự: áp dụng cho loại sản phẩm/claim nào, ngoại lệ nào, phần nào của văn bản được dùng làm căn cứ."
+          />
+        </div>
+      </div>
+      <div
+        style={{
+          marginTop: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 9,
+        }}
+      >
+        {guidanceChecklistKeys.map((key) => (
+          <Checkbox
+            key={key}
+            checked={checklist[key] === "true"}
+            onChange={(v) => toggle(key, v)}
+          >
+            {guidanceChecklistLabels[key]}
+          </Checkbox>
+        ))}
+        {guidanceStatus === "draft" && (
+          <Checkbox
+            checked={checklist.draft_guidance_ack === "true"}
+            onChange={(v) => toggle("draft_guidance_ack", v)}
+          >
+            Draft guidance không phải căn cứ bắt buộc; tôi xác nhận điều này và
+            chỉ dùng văn bản để giải thích cách FDA dự định áp dụng luật.
+          </Checkbox>
+        )}
+      </div>
+      {Object.keys(errors).length > 0 && (
+        <p className="tiny" style={{ marginTop: 10, color: "var(--red-600)" }}>
+          {Object.entries(errors)
+            .map(([, message]) => message)
+            .join(" · ")}
+        </p>
+      )}
+      {affectedRules > 0 && (
+        <div style={{ marginTop: 14 }}>
+          <p className="tiny">
+            Có <b>{affectedRules}</b> rule đang hoạt động trích dẫn nguồn này.
+            Regression phải đạt trên đúng hash hiện tại trước khi ghi nhận đánh
+            giá chuyên gia.
+          </p>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              alignItems: "center",
+              marginTop: 8,
+            }}
+          >
+            <Button
+              variant="secondary"
+              loading={busy}
+              onClick={() => void onRunRegression()}
+            >
+              <FlaskConical size={15} /> Chạy regression rule bị ảnh hưởng
+            </Button>
+            <Badge tone={regressionFresh ? "green" : "amber"} dot>
+              {regressionFresh ? "Regression đạt" : "Chưa có regression đạt"}
+            </Badge>
+          </div>
+        </div>
+      )}
+      <div
+        style={{
+          marginTop: 16,
+          display: "flex",
+          gap: 12,
+          alignItems: "center",
+        }}
+      >
+        <Button loading={saving} onClick={() => void submit()}>
+          <CheckCheck size={15} /> Ghi nhận đánh giá chuyên gia
+        </Button>
+        <span className="tiny muted">
+          Còn {missingGuidanceChecklist(checklist).length} mục checklist chưa
+          xác nhận
+        </span>
+      </div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 ## 1. Database
 
-Dùng Supabase cloud được khuyến nghị khi mở Live Preview Arena. Chạy **0001_initial.sql → 0002_registry_seed.sql → 0003_regulatory_ingestion.sql** bằng SQL Editor (project owner) hoặc `supabase db push` sau khi link project. Đây là migration khởi tạo; không chạy lại `0001` trên schema đã tồn tại. Backup trước khi nâng cấp một database đang có dữ liệu.
+Dùng Supabase cloud được khuyến nghị khi mở Live Preview Arena. Chạy **0001_initial.sql → 0002_registry_seed.sql → 0003_regulatory_ingestion.sql → 0004_guidance_expert_review.sql** bằng SQL Editor (project owner) hoặc `supabase db push` sau khi link project. Đây là migration khởi tạo; không chạy lại `0001` trên schema đã tồn tại. Backup trước khi nâng cấp một database đang có dữ liệu.
 
 Migration tạo Auth profile trigger, schema tenant, RLS, guarded RPCs, append-only audit, frozen dossiers/source versions/report snapshots, queue và các buckets **private**: `label-originals`, `label-normalized`, `review-reports`; migration 0003 thêm `regulatory-raw`. Original INSERT chỉ tại path đã đăng ký; không có quyền overwrite/delete cho customer. Chỉ đọc originals/normalized sau scan `clean`.
 

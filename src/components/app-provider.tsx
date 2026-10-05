@@ -17,6 +17,7 @@ import type {
   LabelFile,
   LabelVersion,
   Member,
+  GuidanceReviewSummary,
   Organization,
   PipelineDiagnostics,
   PipelineStep,
@@ -58,6 +59,7 @@ import { validateIntake, findingPatchSchema } from "@/lib/validation";
 import { buildReportSnapshot } from "@/lib/reports";
 import { assertTransition } from "@/lib/workflow";
 import { runRuleRegression, type RegressionResult } from "@/lib/regression";
+import type { GuidanceReviewInput } from "@/lib/regulatory-guidance";
 
 const STORAGE_KEY = "vexim-workspace-v3";
 const empty: AppData = {
@@ -149,6 +151,11 @@ interface ContextValue {
   setMemberStatus: (id: string, status: Member["status"]) => Promise<void>;
   saveSource: (source: RegulatorySource) => Promise<void>;
   approveSource: (id: string) => Promise<void>;
+  reviewGuidanceSource: (
+    id: string,
+    input: GuidanceReviewInput,
+  ) => Promise<void>;
+  runSourceRegression: (id: string, hash: string) => Promise<boolean>;
   saveRule: (rule: ComplianceRule) => Promise<void>;
   testRule: (id: string) => Promise<RegressionResult[]>;
   approveRule: (id: string) => Promise<void>;
@@ -1535,6 +1542,68 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       );
     });
   };
+  const reviewGuidanceSource = async (
+    id: string,
+    input: GuidanceReviewInput,
+  ) => {
+    assertCan(actorRef.current, "regulatory");
+    if (modeRef.current === "supabase") {
+      await remoteAction(`/regulatory/sources/${id}/expert-review`, input);
+      return;
+    }
+    const review: GuidanceReviewSummary = {
+      id: uid(),
+      source_id: id,
+      reviewer: actorRef.current.id,
+      guidance_status: input.guidance_status,
+      binding_effect: input.binding_effect,
+      scope_note: input.scope_note,
+      checklist: input.checklist,
+      source_version:
+        dataRef.current.sources.find((s) => s.id === id)?.version ?? 1,
+      content_hash:
+        dataRef.current.sources.find((s) => s.id === id)?.content_hash ?? null,
+      created_at: now(),
+    };
+    commit((d) => {
+      const source = d.sources.find((s) => s.id === id);
+      if (!source) throw new Error("Không tìm thấy nguồn.");
+      source.expert_review = review;
+      log(
+        d,
+        "regulatory.guidance_reviewed",
+        "source",
+        id,
+        `Đánh giá chuyên gia ${source.citation} v${source.version} · ${input.guidance_status}`,
+        null,
+        {
+          guidance_status: input.guidance_status,
+          binding_effect: input.binding_effect,
+        },
+      );
+    });
+  };
+  const runSourceRegression = async (id: string, hash: string) => {
+    assertCan(actorRef.current, "regulatory");
+    if (modeRef.current === "supabase") {
+      const result = await remoteAction<{ passed: boolean }>(
+        `/regulatory/sources/${id}/regression`,
+        { expected_hash: hash },
+      );
+      return result.passed;
+    }
+    // Demo mode has no server-side regression ledger; report the in-memory run.
+    const rules = dataRef.current.rules.filter(
+      (r) => r.status === "ACTIVE" && r.source_citations.includes(id),
+    );
+    return runRuleRegression(
+      rules,
+      dataRef.current.sources.map((s) => ({
+        ...s,
+        status: "CURRENT" as const,
+      })),
+    ).every((r) => r.passed);
+  };
   const approveSource = async (id: string) => {
     assertCan(actorRef.current, "regulatory");
     const source = dataRef.current.sources.find((s) => s.id === id);
@@ -1802,6 +1871,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setMemberStatus,
         saveSource,
         approveSource,
+        reviewGuidanceSource,
+        runSourceRegression,
         saveRule,
         testRule,
         approveRule,

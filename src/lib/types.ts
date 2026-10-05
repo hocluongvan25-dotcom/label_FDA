@@ -248,6 +248,19 @@ export interface Review {
   }[];
   missing_information?: string[];
 }
+export interface GuidanceReviewSummary {
+  id: string;
+  source_id: string;
+  reviewer: string | null;
+  reviewer_name?: string | null;
+  guidance_status: string | null;
+  binding_effect: string | null;
+  scope_note: string | null;
+  checklist: Record<string, string> | null;
+  source_version: number;
+  content_hash: string | null;
+  created_at: string | null;
+}
 export interface RegulatorySource {
   api_url?: string | null;
   issue_date?: string | null;
@@ -276,6 +289,8 @@ export interface RegulatorySource {
   approved_at: string | null;
   version: number;
   updated_at: string;
+  /** Latest expert review record, attached by GET /regulatory/sources. */
+  expert_review?: GuidanceReviewSummary | null;
 }
 export interface ComplianceRule {
   id: string;

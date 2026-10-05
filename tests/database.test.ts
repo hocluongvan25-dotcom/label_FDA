@@ -18,6 +18,7 @@ import {
   submit,
 } from "./helpers/database";
 import { RULE_CATALOG } from "../src/lib/regulatory";
+import { guidanceChecklistKeys } from "../src/lib/regulatory-guidance";
 import type {
   ComplianceRule,
   RegulatorySource,
@@ -49,6 +50,11 @@ async function query(sql: string, args: unknown[] = []) {
     throw e;
   }
 }
+const qaGuidanceChecklist = Object.fromEntries(
+  guidanceChecklistKeys.map((k) => [k, "true"]),
+);
+const qaScopeNote =
+  "SYNTHETIC QA FIXTURE ONLY. Not legal advice: the fixture text stands in for a reviewed guidance document.";
 async function currentRegistry() {
   await actor(db, ids.regA);
   const rows = (
@@ -65,6 +71,17 @@ async function currentRegistry() {
         effective_to: null,
       },
     ]);
+  // FDA guidance documents follow the dedicated expert-review workflow (0004):
+  // regA attests, regB approves independently.
+  for (const source of rows)
+    if (/guidance|guideline/i.test(source.document_type))
+      await call(db, "vexim_review_guidance_source", [
+        source.id,
+        qaGuidanceChecklist,
+        "final",
+        "non_binding",
+        qaScopeNote,
+      ]);
   await actor(db, ids.regB);
   for (const source of rows)
     await call(db, "vexim_approve_source", [source.id]);

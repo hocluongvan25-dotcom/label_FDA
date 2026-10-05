@@ -9,15 +9,23 @@ interface RuleRef {
   version: number;
   definition_hash: string;
 }
-export async function verifySnapshotRegression(
+/**
+ * Evaluates the affected ACTIVE rules against synthetic fixtures. The fixtures
+ * are IN MEMORY ONLY: the registry, hashes and approvals are never mutated, so a
+ * regression can never manufacture evidence.
+ */
+async function evaluateAffectedRules(
   db: SupabaseClient,
-  snapshotId: string,
-  hash: string,
-  requester: string | null,
-) {
-  const refs = await rpc<RuleRef[]>(db, "app_snapshot_rule_refs", {
-    sid: snapshotId,
-  });
+  refs: RuleRef[],
+): Promise<
+  {
+    rule_key: string;
+    name: string;
+    passed: boolean;
+    expected: string;
+    actual: string;
+  }[]
+> {
   const sources = await db.from("regulatory_sources").select("*").limit(2000);
   if (sources.error) throw dbError(sources.error);
   if (
@@ -65,8 +73,39 @@ export async function verifySnapshotRegression(
       expected: "Registered regression fixture",
       actual: "Human engineering/regulatory review required",
     });
+  return results;
+}
+export async function verifySnapshotRegression(
+  db: SupabaseClient,
+  snapshotId: string,
+  hash: string,
+  requester: string | null,
+) {
+  const refs = await rpc<RuleRef[]>(db, "app_snapshot_rule_refs", {
+    sid: snapshotId,
+  });
+  const results = await evaluateAffectedRules(db, refs);
   return rpc<{ passed: boolean }>(db, "vexim_record_snapshot_regression", {
     sid: snapshotId,
+    expected_hash: hash,
+    rule_refs: refs,
+    test_results: results,
+    requester,
+  });
+}
+/** Regression for a manually registered guidance source (no API snapshot). */
+export async function verifySourceRegression(
+  db: SupabaseClient,
+  sourceId: string,
+  hash: string,
+  requester: string | null,
+) {
+  const refs = await rpc<RuleRef[]>(db, "app_guidance_rule_refs", {
+    sid: sourceId,
+  });
+  const results = await evaluateAffectedRules(db, refs);
+  return rpc<{ passed: boolean }>(db, "vexim_record_guidance_regression", {
+    sid: sourceId,
     expected_hash: hash,
     rule_refs: refs,
     test_results: results,

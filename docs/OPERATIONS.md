@@ -49,7 +49,7 @@ Seed chỉ có 12 nguồn và 15 rules ở **DRAFT**. Không có công cụ nào
 Quy trình nội bộ (2 Regulatory Admin độc lập; System Admin không được phép):
 
 1. **Nguồn thật** — `npm run regulatory:worker -- --schedule` (hoặc đăng ký thủ công tại `/sources`: excerpt ≥ 80 ký tự, `retrieved_at`, canonical URL).
-2. **Admin A** mở `/knowledge`, kiểm tra 9 mục checklist của snapshot DRAFT, phân loại thay đổi và ngày hiệu lực.
+2. **Admin A** mở `/knowledge`, kiểm tra 9 mục checklist của snapshot DRAFT, phân loại thay đổi và ngày hiệu lực. Tài liệu dạng **FDA Guidance** theo mục 6 thay vì bước này.
 3. **Admin B** (khác người tạo) kích hoạt snapshot → nguồn `CURRENT`, chunks `APPROVED`.
 4. **Admin A** tạo/cập nhật 15 rule draft tại `/rules`, mỗi rule gắn đúng nguồn `CURRENT`.
 5. **Regression** — 15 fixtures phải passed, `test_hash` khớp `definition_hash`.
@@ -72,17 +72,45 @@ Tiến trình hợp lệ: `validation` (scan + normalize) → `ocr` → `extract
 
 ## 5. Xử lý sự cố
 
-| Hiện tượng                                            | Nguyên nhân thường gặp                          | Xử lý                                                                                                                       |
-| ----------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| 0% mãi, “Chưa có worker nào nhận tác vụ”              | Worker chưa chạy hoặc khác project Supabase     | Chạy worker cùng `.env.local`; xem log container                                                                            |
-| Job `retry`, lỗi “Malware scanner chưa được cấu hình” | Thiếu `CLAMAV_HOST` trong môi trường **worker** | Cấu hình ClamAV cho worker; `ALLOW_UNSCANNED_DEV_UPLOADS` chỉ dùng dev                                                      |
-| Job `running` nhưng lease hết hạn                     | Worker bị dừng/mất kết nối giữa chừng           | Job tự trở lại hàng đợi; kiểm tra log và độ ổn định kết nối                                                                 |
-| `dead_letter`                                         | Quá 3 lần thử (file hỏng, scanner, OCR)         | Khắc phục nguyên nhân rồi “Chạy lại kiểm tra” từ bước phù hợp                                                               |
-| Đến bước `rules` rồi `SOURCE_UNAVAILABLE`             | Chưa đủ 15 rules ACTIVE hoặc nguồn hết hiệu lực | Làm mục 3; kiểm tra `/knowledge`                                                                                            |
-| Không mở được file nhãn                               | File chưa `scan_status = clean`                 | Chờ worker quét; đây là chốt an toàn, không bypass                                                                          |
-| Lưu draft nguồn báo “Dữ liệu đầu vào chưa hợp lệ”     | Một trường không qua validation                 | Modal hiện lỗi ngay dưới từng ô và trong thông báo; kiểm tra Ngày truy xuất, URL HTTPS, snapshot ≥ 80 ký tự, độ ưu tiên 1–6 |
+| Hiện tượng                                              | Nguyên nhân thường gặp                                             | Xử lý                                                                                                                       |
+| ------------------------------------------------------- | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 0% mãi, “Chưa có worker nào nhận tác vụ”                | Worker chưa chạy hoặc khác project Supabase                        | Chạy worker cùng `.env.local`; xem log container                                                                            |
+| Job `retry`, lỗi “Malware scanner chưa được cấu hình”   | Thiếu `CLAMAV_HOST` trong môi trường **worker**                    | Cấu hình ClamAV cho worker; `ALLOW_UNSCANNED_DEV_UPLOADS` chỉ dùng dev                                                      |
+| Job `running` nhưng lease hết hạn                       | Worker bị dừng/mất kết nối giữa chừng                              | Job tự trở lại hàng đợi; kiểm tra log và độ ổn định kết nối                                                                 |
+| `dead_letter`                                           | Quá 3 lần thử (file hỏng, scanner, OCR)                            | Khắc phục nguyên nhân rồi “Chạy lại kiểm tra” từ bước phù hợp                                                               |
+| Đến bước `rules` rồi `SOURCE_UNAVAILABLE`               | Chưa đủ 15 rules ACTIVE hoặc nguồn hết hiệu lực                    | Làm mục 3; kiểm tra `/knowledge`                                                                                            |
+| Không mở được file nhãn                                 | File chưa `scan_status = clean`                                    | Chờ worker quét; đây là chốt an toàn, không bypass                                                                          |
+| Lưu draft nguồn báo “Dữ liệu đầu vào chưa hợp lệ”       | Một trường không qua validation                                    | Modal hiện lỗi ngay dưới từng ô và trong thông báo; kiểm tra Ngày truy xuất, URL HTTPS, snapshot ≥ 80 ký tự, độ ưu tiên 1–6 |
+| Nguồn FDA Guidance không phê duyệt được                 | Guidance cần đánh giá chuyên gia trước khi duyệt                   | Làm mục 6: Admin A ghi nhận đánh giá chuyên gia, Admin B (khác người) phê duyệt. Modal liệt kê đúng lý do đang chặn         |
+| Báo “…remains DRAFT until its dedicated expert-review…” | Chuỗi này **không có trong repo**; do SQL/trigger tự thêm trong DB | Chạy truy vấn dò ở mục 6 để tìm hàm phát sinh, drop/guard đó đi rồi dùng workflow 0004                                      |
 
-## 6. Nhật ký và giám sát
+## 6. Workflow chuyên biệt cho FDA Guidance
+
+Tài liệu có `document_type` chứa _guidance/guideline_ (ví dụ “FDA Label Claims Guidance v2”) không đi theo luồng eCFR:
+
+1. **Admin A (người tạo hoặc người đối chiếu)** mở nguồn tại `/sources` → tick 9 mục checklist đánh giá chuyên gia, chọn tình trạng văn bản (final/draft), hiệu lực pháp lý (**guidance FDA = không ràng buộc**), ghi phạm vi áp dụng ≥ 40 ký tự → “Ghi nhận đánh giá chuyên gia”.
+2. Nếu có rule ACTIVE trích dẫn nguồn: bấm “Chạy regression rule bị ảnh hưởng”, phải đạt trên đúng hash hiện tại.
+3. **Admin B (người khác)** phê duyệt. Nút phê duyệt bị chặn và modal nêu rõ lý do khi: chưa có đánh giá, đánh giá đã cũ (đổi version/hash), chính bạn là người đánh giá, văn bản withdrawn/superseded, hoặc ghi nhận là “ràng buộc pháp lý”.
+4. Sau khi duyệt: `status = CURRENT`, `ingestion_status = ACTIVE`, audit `regulatory.guidance_reviewed` → `regulatory.guidance_approved`.
+
+Quy tắc hai người vẫn giữ nguyên; hệ thống không tự đánh giá, không tự duyệt, không tạo nội dung/hash/chữ ký giả.
+
+### Dò một thông báo lạ phát sinh từ DB
+
+Nếu bạn gặp thông báo không có trong mã nguồn (ví dụ `Ingested FDA Guidance remains DRAFT until its dedicated expert-review and approval workflow is implemented`), nó đến từ SQL đã chạy ngoài repo này. Tìm nguồn:
+
+```sql
+select proname, prosrc from pg_proc where prosrc ilike '%remains DRAFT%';
+select t.tgname, t.tgrelid::regclass
+  from pg_trigger t join pg_proc p on p.oid = t.tgfoid
+ where p.prosrc ilike '%remains DRAFT%';
+select conname, conrelid::regclass, pg_get_constraintdef(oid)
+  from pg_constraint where pg_get_constraintdef(oid) ilike '%remains DRAFT%';
+```
+
+Sau khi xác định, drop function/trigger/constraint đó (hoặc sửa lại để gọi workflow 0004) — đừng tắt chốt an toàn bằng cách tự duyệt nguồn.
+
+## 7. Nhật ký và giám sát
 
 - `pipeline_jobs` (status, attempts, `last_error`, `locked_until`) và `pipeline_outputs` (kết quả trung gian) là nguồn sự thật về tiến độ.
 - Audit log append-only ghi mọi quyết định, truy cập file và phê duyệt.

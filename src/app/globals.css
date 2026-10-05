@@ -99,8 +99,19 @@ svg {
 ::selection {
   background: #d6eae0;
 }
+/*
+ * Placeholders are examples, not values. They must never read like filled-in
+ * data: a reviewer has to see at a glance which fields are still empty.
+ */
 ::placeholder {
-  color: #748077;
+  color: #aab7a9;
+  font-style: italic;
+  opacity: 1;
+}
+textarea::placeholder,
+.input::placeholder,
+.select-wrap select:invalid {
+  font-style: italic;
 }
 .sr-only {
   position: absolute;
@@ -3607,6 +3618,59 @@ svg {
   justify-content: space-between;
   gap: 12px;
   margin-top: 25px;
+}
+.blocker-list {
+  margin-top: 20px;
+  display: grid;
+  gap: 10px;
+}
+.blocker-card {
+  border: 1px solid #edddbe;
+  border-left: 3px solid #d9a86a;
+  background: #fdf7ec;
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.blocker-card.error {
+  border-color: #e9cdc2;
+  border-left-color: #c8705a;
+  background: #fdf2ef;
+}
+.blocker-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #8a5b3f;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.blocker-card.error .blocker-head {
+  color: #a24f3c;
+}
+.blocker-card p {
+  font-size: 12px;
+  line-height: 1.7;
+  color: #6b6152;
+  margin-top: 4px;
+}
+.blocker-card p.muted {
+  color: #8a8272;
+}
+.blocker-card .tiny span {
+  font-weight: 600;
+}
+.intake-placeholder-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 14px;
+  font-size: 12px;
+  line-height: 1.7;
+  color: #8a8272;
+}
+.intake-placeholder-note em {
+  font-style: italic;
+  color: #aab7a9;
 }
 .compare-grid {
   display: grid;

@@ -223,7 +223,10 @@ export function ProductIntake({ productId }: { productId?: string }) {
     );
     if (Object.keys(relevant).length) {
       setErrors(relevant);
-      app.notify("Còn thông tin cần bổ sung ở bước này.", "error");
+      app.notify(
+        `Còn thông tin cần bổ sung ở bước này: ${Object.values(relevant)[0]}`,
+        "error",
+      );
       return;
     }
     setErrors({});
@@ -342,6 +345,14 @@ export function ProductIntake({ productId }: { productId?: string }) {
           </div>
         </aside>
         <Card className="intake-card">
+          <p className="intake-placeholder-note">
+            <Info size={14} />
+            <span>
+              Chữ nghiêng mờ trong ô nhập chỉ là <em>ví dụ gợi ý</em>, không
+              phải dữ liệu đã được lưu. Hồ sơ chỉ ghi nhận nội dung bạn tự nhập;
+              trường còn trống sẽ bị chặn khi bấm “Tiếp tục”.
+            </span>
+          </p>
           {step === 0 && (
             <div className="form-section">
               <div className="form-section-header">

@@ -40,7 +40,9 @@ App và worker là **2 process riêng**. Chạy worker trên container/VM long-l
 
 Tuần tự: magic/hash/size → ClamAV → normalized pages/text layer → local hoặc approved OCR → grounded extraction → ACTIVE/current rules → verifier → human review. Heartbeat 30 giây, lease 6 phút, tối đa 3 attempts tự động, exponential retry/dead-letter. Persist intermediate outputs để retry không chạy lại bước đã thành công. Không worker nào được tự approve.
 
-ClamAV cần được cập nhật definitions, INSTREAM capacity ≥50 MB và network chỉ cho worker. `docker-compose.dev.yml` là lựa chọn local; scanner có thể mất vài phút để tải definitions. File phát hiện malware bị đánh dấu rejected; không gửi OCR/model hoặc cho người dùng mở file.
+Cách gọn nhất để có cả worker và scanner: `docker compose -f docker-compose.worker.yml up -d --build` (image `Dockerfile` trong repo + container ClamAV, worker chỉ start khi scanner healthy). ClamAV cần được cập nhật definitions, INSTREAM capacity ≥50 MB và network chỉ cho worker. `docker-compose.dev.yml` là lựa chọn chỉ chạy scanner local; scanner có thể mất vài phút để tải definitions. Sau khi chạy, kiểm tra bằng `npm run doctor`.
+
+**Nếu không có worker, review sẽ đứng ở 0% với mọi bước “Chờ”** — web app không chạy pipeline. Nguyên nhân hiển thị ngay trong app (panel Phân tích nhãn theo từng bước) và qua `npm run doctor`. Runbook đầy đủ: [OPERATIONS.md](OPERATIONS.md). File phát hiện malware bị đánh dấu rejected; không gửi OCR/model hoặc cho người dùng mở file.
 
 `ALLOW_UNSCANNED_DEV_UPLOADS=true` chỉ dùng development, không có tác dụng trong production. File gắn `dev_unscanned` không được signed/read/approve report; đây không phải cách bypass chốt malware cho hồ sơ thật.
 

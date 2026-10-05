@@ -73,6 +73,10 @@ import {
   sourceIsCurrent,
   uid,
 } from "@/lib/utils";
+import {
+  REQUIRED_ACTIVE_RULES,
+  explainPipelineBlockers,
+} from "@/lib/pipeline-status";
 import { approvalIssues } from "@/lib/reports";
 
 const fieldLabels: Record<string, string> = {
@@ -276,6 +280,7 @@ export function ReviewWorkspace({ reviewId }: { reviewId: string }) {
           </InlineNotice>
         </div>
       )}
+      {!processing && <RulesGateNotice />}
       {!processing && (
         <div className="review-summary-strip">
           <div>
@@ -915,6 +920,28 @@ function FindingDetail({
     </>
   );
 }
+/**
+ * Rules gate outside the pipeline panel: while a review is being processed the
+ * panel lists it, otherwise reviewers still need to know why no rule ran.
+ */
+function RulesGateNotice() {
+  const { data, mode } = useApp();
+  if (mode !== "supabase" || !data.rules.length) return null;
+  const active = data.rules.filter((r) => r.status === "ACTIVE").length;
+  if (active >= REQUIRED_ACTIVE_RULES) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <InlineNotice tone="warning" icon={<CircleAlert size={16} />}>
+        Mới có {active}/{data.rules.length} quy tắc ACTIVE. Chưa đủ{" "}
+        {REQUIRED_ACTIVE_RULES} quy tắc hiện hành thì không thể kết luận “không
+        phát hiện vấn đề”.{" "}
+        <Link href="/rules" className="text-button">
+          Mở hướng dẫn kích hoạt
+        </Link>
+      </InlineNotice>
+    </div>
+  );
+}
 function PipelinePanel({
   review,
   onRerun,
@@ -922,7 +949,17 @@ function PipelinePanel({
   review: Review;
   onRerun: () => void;
 }) {
-  const { actor, mode } = useApp();
+  const { actor, mode, diagnostics, data } = useApp();
+  const blockers = explainPipelineBlockers({
+    review,
+    diagnostics,
+    rulesActive: data.rules.length
+      ? data.rules.filter((r) => r.status === "ACTIVE").length
+      : null,
+    rulesTotal: data.rules.length || null,
+    rulesVisible: !actor.role.startsWith("customer"),
+    mode,
+  });
   return (
     <Card className="pipeline-panel">
       <div
@@ -949,6 +986,30 @@ function PipelinePanel({
             Đây là trạng thái pipeline minh họa, không có job nền đang chạy.
             Chọn “Chạy lại kiểm tra” để chạy bộ rules trên fixture mẫu.
           </InlineNotice>
+        </div>
+      )}
+      {blockers.length > 0 && (
+        <div className="blocker-list">
+          <p className="tiny muted">
+            Self-check chưa thể chạy vì các điều kiện sau chưa thỏa mãn. Không
+            có kết quả nào được suy diễn khi pipeline chưa chạy thật.
+          </p>
+          {blockers.map((b) => (
+            <div key={b.id} className={`blocker-card ${b.tone}`}>
+              <div className="blocker-head">
+                {b.tone === "error" ? (
+                  <CircleAlert size={16} />
+                ) : (
+                  <Info size={16} />
+                )}
+                <strong>{b.title}</strong>
+              </div>
+              <p className="tiny">{b.detail}</p>
+              <p className="tiny muted">
+                <span>Cách xử lý:</span> {b.action}
+              </p>
+            </div>
+          ))}
         </div>
       )}
       <div className="pipeline-progress">
